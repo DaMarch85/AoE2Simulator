@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "aoe2-build-lab",
+  "name": "aoe2simulator",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-04-21",
   "compatibility_flags": [
@@ -14,7 +14,7 @@
   "services": [
     {
       "binding": "WORKER_SELF_REFERENCE",
-      "service": "aoe2-build-lab"
+      "service": "aoe2simulator"
     }
   ],
   "images": {
