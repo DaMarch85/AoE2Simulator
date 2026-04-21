@@ -1,0 +1,157 @@
+import type { ScenarioDraft } from "@/lib/sim/schema";
+import { ScenarioDraftSchema } from "@/lib/sim/schema";
+
+export const exampleScenarioDraft: ScenarioDraft = ScenarioDraftSchema.parse({
+  id: "scn_19pop_archers_castle",
+  name: "19-pop archers into Castle",
+  prompt:
+    "If I do a 19-vil dark age, build a range at the start of feudal age, and keep producing vils and archers constantly, when can I get to Castle Age and how many archers will I have?",
+  civId: "generic",
+  rulesetVersion: "current",
+  baseOpeningId: "template_19pop_archers_generic",
+  assumptions: {
+    mapPreset: "arabia",
+    startPreset: "standard",
+    executionProfile: "clean",
+    deerPushed: 0,
+    boarLure: "clean",
+    loomTiming: "auto",
+    walkProfile: {
+      food: "medium",
+      wood: "medium",
+      gold: "medium",
+      stone: "medium",
+    },
+    autoDefaults: {
+      inferHardPrereqs: true,
+      suggestMissingSteps: true,
+      autoHouseBuffer: 5,
+    },
+  },
+  userEvents: [
+    {
+      id: "evt_feudal_19_vils",
+      label: "Advance to Feudal at 19 villagers",
+      lane: "age",
+      enabled: true,
+      trigger: {
+        type: "at_villager_count",
+        villagers: 19,
+      },
+      actions: [
+        {
+          type: "advance_age",
+          age: "feudal",
+          priority: "high",
+        },
+      ],
+    },
+    {
+      id: "evt_range_on_feudal",
+      label: "Build Range on Feudal hit",
+      lane: "buildings",
+      enabled: true,
+      trigger: {
+        type: "on_age_reached",
+        age: "feudal",
+      },
+      actions: [
+        {
+          type: "build",
+          buildingId: "archery_range",
+          builders: 2,
+          priority: "high",
+        },
+      ],
+    },
+    {
+      id: "evt_blacksmith_after_range",
+      label: "Build Blacksmith after Range completes",
+      lane: "buildings",
+      enabled: true,
+      trigger: {
+        type: "on_entity_complete",
+        entityRef: "archery_range",
+      },
+      actions: [
+        {
+          type: "build",
+          buildingId: "blacksmith",
+          builders: 2,
+          priority: "high",
+        },
+      ],
+    },
+  ],
+  policies: [
+    {
+      id: "pol_keep_tc_busy",
+      kind: "keep_queue_busy",
+      enabled: true,
+      priority: "must",
+      producerType: "town_center",
+      productId: "villager",
+    },
+    {
+      id: "pol_keep_range_busy",
+      kind: "keep_queue_busy",
+      enabled: true,
+      priority: "normal",
+      producerType: "archery_range",
+      productId: "archer",
+      maxBuildings: 1,
+    },
+    {
+      id: "pol_auto_houses",
+      kind: "auto_house",
+      enabled: true,
+      priority: "high",
+      popBuffer: 5,
+      builders: 1,
+    },
+    {
+      id: "pol_click_castle_asap",
+      kind: "click_age_asap",
+      enabled: true,
+      priority: "high",
+      targetAge: "castle",
+      reserveMode: "dynamic",
+      canPause: ["military"],
+    },
+  ],
+  questions: [
+    {
+      id: "q_castle_affordable",
+      kind: "age_affordable_at",
+      age: "castle",
+    },
+    {
+      id: "q_castle_clicked",
+      kind: "age_clicked_at",
+      age: "castle",
+    },
+    {
+      id: "q_castle_reached",
+      kind: "age_reached_at",
+      age: "castle",
+    },
+    {
+      id: "q_archers_click",
+      kind: "unit_count_at_milestone",
+      unitId: "archer",
+      milestone: "age_click",
+      age: "castle",
+    },
+    {
+      id: "q_archers_reach",
+      kind: "unit_count_at_milestone",
+      unitId: "archer",
+      milestone: "age_reach",
+      age: "castle",
+    },
+    {
+      id: "q_bottleneck",
+      kind: "bottleneck_summary",
+    },
+  ],
+});

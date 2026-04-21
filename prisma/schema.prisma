@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Workspace {
+  id          String      @id @default(cuid())
+  cookieToken String      @unique
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  scenarios   Scenario[]
+}
+
+model Scenario {
+  id             String            @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name           String
+  civId          String            @default("generic")
+  rulesetVersion String            @default("current")
+  draftJson      Json
+  summaryJson    Json?
+  latestRunJson  Json?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  versions       ScenarioVersion[]
+  shareLinks     ShareLink[]
+
+  @@index([workspaceId, updatedAt])
+}
+
+model ScenarioVersion {
+  id         String   @id @default(cuid())
+  scenarioId String
+  scenario   Scenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  label      String?
+  draftJson  Json
+  createdAt  DateTime @default(now())
+
+  @@index([scenarioId, createdAt])
+}
+
+model ShareLink {
+  id         String    @id @default(cuid())
+  scenarioId String
+  scenario   Scenario  @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  token      String    @unique
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime?
+
+  @@index([scenarioId])
+}
