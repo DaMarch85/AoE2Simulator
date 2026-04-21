@@ -452,7 +452,7 @@ export const BuildingDefinitionSchema = z.object({
   name: z.string().min(1),
   age: AgeSchema,
   cost: PartialResourceStockSchema,
-  buildTimeSec: z.number().positive(),
+  buildTimeSec: z.number().nonnegative(),
   supportsTraining: z.array(z.string().min(1)).default([]),
   supportsResearch: z.array(z.string().min(1)).default([]),
   populationProvided: z.number().int().nonnegative().default(0),
