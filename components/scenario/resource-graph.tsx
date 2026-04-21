@@ -3,7 +3,10 @@
 import type { SimulationRun } from "@/lib/sim/schema";
 import { formatClock } from "@/lib/utils";
 
-const COLORS: Record<string, string> = {
+const resources = ["food", "wood", "gold", "stone"] as const;
+type ResourceKey = (typeof resources)[number];
+
+const COLORS: Record<ResourceKey, string> = {
   food: "#22c55e",
   wood: "#f59e0b",
   gold: "#facc15",
@@ -36,8 +39,6 @@ export function ResourceGraph({
       frame.stockpile.stone,
     ]),
   );
-
-  const resources: Array<keyof typeof COLORS> = ["food", "wood", "gold", "stone"];
 
   const cursorX = padding + (cursorTime / totalTime) * (width - padding * 2);
 
