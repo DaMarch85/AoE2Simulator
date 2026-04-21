@@ -3,6 +3,7 @@ import { buildWarnings } from "./warnings";
 import {
   type Action,
   type Age,
+  type Assumptions,
   type Keyframe,
   type LaneSegment,
   type ResolvedScenario,
@@ -14,6 +15,7 @@ import {
 } from "./schema";
 import {
   ageTechId,
+  AGES,
   canAfford,
   cloneStock,
   cloneTaskCounts,
@@ -52,12 +54,24 @@ interface ResearchJob {
   ageTarget?: Age;
 }
 
+interface BuilderAssignment {
+  villagerId: number;
+  returnTask: Task;
+}
+
 interface BuildJob {
   laneId: string;
   buildingId: string;
   endSec: number;
-  returnTasks: Task[];
+  builders: BuilderAssignment[];
   label: string;
+}
+
+interface VillagerState {
+  id: number;
+  task: Task;
+  pendingTask: Task | null;
+  walkUntil: number | null;
 }
 
 interface EngineState {
@@ -70,6 +84,8 @@ interface EngineState {
   units: Record<string, number>;
   buildings: Record<string, number>;
   tasks: Record<Task, number>;
+  villagerRoster: VillagerState[];
+  nextVillagerId: number;
   nextVillagerAssignments: Task[];
   pendingActions: PendingAction[];
   completedEntityRefs: Set<string>;
@@ -80,14 +96,38 @@ interface EngineState {
   buildJobs: BuildJob[];
 }
 
-interface ProducerVisualState {
+interface LaneVisualState {
   state: LaneSegment["state"];
   label: string;
   startSec: number;
 }
 
+interface CastleReserveStatus {
+  action: Action | null;
+  active: boolean;
+  remaining: Partial<ResourceStock>;
+  canPause: Array<"military" | "economy" | "town_center">;
+}
+
+const FOOD_TASKS: Task[] = ["sheep", "boar", "berries", "farms"];
+const DEFAULT_HORIZON_SEC = 28 * 60;
+
+function ageRank(age: Age) {
+  return AGES.indexOf(age);
+}
+
+function createVillagerRoster(count: number): VillagerState[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: index + 1,
+    task: "sheep",
+    pendingTask: null,
+    walkUntil: null,
+  }));
+}
+
 function createState(ruleset: Ruleset): EngineState {
-  return {
+  const villagerRoster = createVillagerRoster(ruleset.startingVillagers);
+  const state: EngineState = {
     timeSec: 0,
     age: "dark",
     resources: cloneStock(ruleset.startingResources),
@@ -110,11 +150,9 @@ function createState(ruleset: Ruleset): EngineState {
       blacksmith: 0,
       market: 0,
     },
-    tasks: (() => {
-      const tasks = createEmptyTaskCounts();
-      tasks.sheep = ruleset.startingVillagers;
-      return tasks;
-    })(),
+    tasks: createEmptyTaskCounts(),
+    villagerRoster,
+    nextVillagerId: ruleset.startingVillagers + 1,
     nextVillagerAssignments: [],
     pendingActions: [],
     completedEntityRefs: new Set<string>(),
@@ -136,6 +174,21 @@ function createState(ruleset: Ruleset): EngineState {
     researchJobs: [],
     buildJobs: [],
   };
+
+  syncTaskCounts(state);
+  return state;
+}
+
+function syncTaskCounts(state: EngineState) {
+  const nextCounts = createEmptyTaskCounts();
+
+  for (const villager of state.villagerRoster) {
+    nextCounts[villager.task] += 1;
+  }
+
+  state.tasks = nextCounts;
+  state.villagers = state.villagerRoster.length;
+  state.units.villager = state.villagerRoster.length;
 }
 
 function hasDarkAgePrereqs(state: EngineState) {
@@ -144,6 +197,27 @@ function hasDarkAgePrereqs(state: EngineState) {
 
 function hasCastlePrereqs(state: EngineState) {
   return (state.buildings.archery_range ?? 0) + (state.buildings.blacksmith ?? 0) + (state.buildings.market ?? 0) >= 2;
+}
+
+function meetsRequirements(
+  state: EngineState,
+  requirements: Array<{ kind: string; age?: Age; buildingId?: string; count?: number; techId?: string }>,
+) {
+  return requirements.every((requirement) => {
+    if (requirement.kind === "age") {
+      return requirement.age ? ageRank(state.age) >= ageRank(requirement.age) : true;
+    }
+
+    if (requirement.kind === "building") {
+      return (state.buildings[requirement.buildingId ?? ""] ?? 0) >= (requirement.count ?? 1);
+    }
+
+    if (requirement.kind === "tech") {
+      return state.completedEntityRefs.has(requirement.techId ?? "");
+    }
+
+    return true;
+  });
 }
 
 function canAdvanceToAge(state: EngineState, ruleset: Ruleset, age: Age) {
@@ -193,12 +267,12 @@ function addPendingAction(state: EngineState, action: Action, eventId: string, c
     priority: "priority" in action ? priorityScore(action.priority) : priorityScore("normal"),
   });
 
-  state.pendingActions.sort((a, b) => {
-    if (a.priority !== b.priority) {
-      return a.priority - b.priority;
+  state.pendingActions.sort((left, right) => {
+    if (left.priority !== right.priority) {
+      return left.priority - right.priority;
     }
 
-    return a.createdAt - b.createdAt;
+    return left.createdAt - right.createdAt;
   });
 
   return true;
@@ -244,38 +318,155 @@ function preferredBuilderSources(buildingId: string): Task[] {
   }
 }
 
-function allocateBuilders(state: EngineState, count: number, buildingId: string) {
-  const taken: Task[] = [];
-  const sources = preferredBuilderSources(buildingId);
+function walkDurationForTask(task: Task, assumptions: Assumptions) {
+  const lookup = {
+    short: 2,
+    medium: 4,
+    long: 6,
+  } as const;
 
-  for (const task of sources) {
-    while ((state.tasks[task] ?? 0) > 0 && taken.length < count) {
-      state.tasks[task] -= 1;
-      state.tasks.build += 1;
-      taken.push(task);
+  if (task === "wood") {
+    return lookup[assumptions.walkProfile.wood];
+  }
+
+  if (task === "gold") {
+    return lookup[assumptions.walkProfile.gold];
+  }
+
+  if (task === "stone") {
+    return lookup[assumptions.walkProfile.stone];
+  }
+
+  if (FOOD_TASKS.includes(task)) {
+    return lookup[assumptions.walkProfile.food];
+  }
+
+  return 0;
+}
+
+function findVillager(state: EngineState, villagerId: number) {
+  return state.villagerRoster.find((villager) => villager.id === villagerId);
+}
+
+function sourceTasksForAction(action: Action & { type: "assign_existing_villagers" }): Task[] {
+  if (action.from) {
+    return [action.from];
+  }
+
+  return ["idle", "sheep", "boar", "berries", "farms", "wood", "gold", "stone"];
+}
+
+function selectVillagers(state: EngineState, count: number, sourceTasks: Task[]) {
+  const selected: VillagerState[] = [];
+
+  for (const task of sourceTasks) {
+    const matches = state.villagerRoster
+      .filter((villager) => villager.task === task)
+      .sort((left, right) => left.id - right.id);
+
+    for (const villager of matches) {
+      if (selected.length >= count) {
+        break;
+      }
+
+      if (selected.some((item) => item.id === villager.id)) {
+        continue;
+      }
+
+      selected.push(villager);
     }
 
-    if (taken.length === count) {
+    if (selected.length >= count) {
       break;
     }
   }
 
-  if (taken.length < count) {
-    for (const task of taken) {
-      state.tasks.build -= 1;
-      state.tasks[task] += 1;
-    }
+  return selected;
+}
 
+function assignVillagerTask(
+  villager: VillagerState,
+  task: Task,
+  state: EngineState,
+  assumptions: Assumptions,
+  withWalk = true,
+) {
+  if (villager.task === task && villager.pendingTask == null) {
+    return;
+  }
+
+  if (!withWalk || task === "build" || task === "idle" || task === "walk") {
+    villager.task = task;
+    villager.pendingTask = null;
+    villager.walkUntil = null;
+    return;
+  }
+
+  const walkDuration = walkDurationForTask(task, assumptions);
+  if (walkDuration <= 0) {
+    villager.task = task;
+    villager.pendingTask = null;
+    villager.walkUntil = null;
+    return;
+  }
+
+  villager.task = "walk";
+  villager.pendingTask = task;
+  villager.walkUntil = state.timeSec + walkDuration;
+}
+
+function allocateBuilders(state: EngineState, count: number, buildingId: string): BuilderAssignment[] | null {
+  const selected = selectVillagers(state, count, preferredBuilderSources(buildingId));
+  if (selected.length < count) {
     return null;
   }
 
-  return taken;
+  const builders: BuilderAssignment[] = [];
+  for (const villager of selected) {
+    const returnTask = villager.task === "walk" ? villager.pendingTask ?? "idle" : villager.task;
+    builders.push({ villagerId: villager.id, returnTask });
+    villager.task = "build";
+    villager.pendingTask = null;
+    villager.walkUntil = null;
+  }
+
+  syncTaskCounts(state);
+  return builders;
 }
 
-function releaseBuilders(state: EngineState, returnTasks: Task[]) {
-  for (const task of returnTasks) {
-    state.tasks.build = Math.max(0, state.tasks.build - 1);
-    state.tasks[task] += 1;
+function releaseBuilders(state: EngineState, builders: BuilderAssignment[], assumptions: Assumptions) {
+  for (const builder of builders) {
+    const villager = findVillager(state, builder.villagerId);
+    if (!villager) {
+      continue;
+    }
+
+    assignVillagerTask(villager, builder.returnTask, state, assumptions, true);
+  }
+
+  syncTaskCounts(state);
+}
+
+function updateWalkingVillagers(state: EngineState) {
+  let changed = false;
+
+  for (const villager of state.villagerRoster) {
+    if (villager.task !== "walk") {
+      continue;
+    }
+
+    if (villager.walkUntil == null || villager.walkUntil > state.timeSec) {
+      continue;
+    }
+
+    villager.task = villager.pendingTask ?? "idle";
+    villager.pendingTask = null;
+    villager.walkUntil = null;
+    changed = true;
+  }
+
+  if (changed) {
+    syncTaskCounts(state);
   }
 }
 
@@ -307,6 +498,47 @@ function addProducerIfNeeded(state: EngineState, buildingId: string) {
   });
 }
 
+function castleReserveStatus(state: EngineState, scenario: ResolvedScenario, ruleset: Ruleset): CastleReserveStatus {
+  const policy = scenario.policies.find(
+    (item) => item.kind === "click_age_asap" && item.targetAge === "castle" && item.enabled,
+  );
+
+  if (!policy || policy.kind !== "click_age_asap" || state.age !== "feudal") {
+    return { action: null, active: false, remaining: {}, canPause: [] };
+  }
+
+  const action: Action = {
+    type: "advance_age",
+    age: "castle",
+    priority: policy.priority,
+  };
+
+  const castleTech = ruleset.techs.castle_age;
+  const remaining = {
+    food: Math.max(0, (castleTech.cost.food ?? 0) - state.resources.food),
+    gold: Math.max(0, (castleTech.cost.gold ?? 0) - state.resources.gold),
+  } satisfies Partial<ResourceStock>;
+
+  const prereqsReady = hasCastlePrereqs(state);
+  const affordableSoon = (remaining.food ?? 0) <= 150 || (remaining.gold ?? 0) <= 50;
+  const active =
+    prereqsReady &&
+    policy.reserveMode !== "observe" &&
+    (policy.reserveMode === "hard" || affordableSoon || state.resources.food >= 650 || state.resources.gold >= 150);
+
+  return { action, active, remaining, canPause: policy.canPause };
+}
+
+function shouldPauseQueue(
+  state: EngineState,
+  scenario: ResolvedScenario,
+  ruleset: Ruleset,
+  domain: "military" | "economy" | "town_center",
+) {
+  const reserve = castleReserveStatus(state, scenario, ruleset);
+  return reserve.active && reserve.canPause.includes(domain);
+}
+
 function queueBlockedReason(
   state: EngineState,
   ruleset: Ruleset,
@@ -316,6 +548,10 @@ function queueBlockedReason(
   if (buildingId === "town_center") {
     if ((state.population + 1) > state.popCap) {
       return "Need house";
+    }
+
+    if (shouldPauseQueue(state, scenario, ruleset, "town_center")) {
+      return "Castle reserve";
     }
 
     if (!canAfford(state.resources, ruleset.units.villager.cost)) {
@@ -329,17 +565,7 @@ function queueBlockedReason(
     return "Need house";
   }
 
-  const agePolicy = scenario.policies.find(
-    (policy: ResolvedScenario["policies"][number]) => policy.kind === "click_age_asap" && policy.targetAge === "castle" && policy.enabled,
-  );
-
-  const closeToCastle =
-    agePolicy &&
-    state.age === "feudal" &&
-    hasCastlePrereqs(state) &&
-    (state.resources.food >= 650 || state.resources.gold >= 150);
-
-  if (agePolicy && agePolicy.kind === "click_age_asap" && closeToCastle && agePolicy.canPause.includes("military")) {
+  if (shouldPauseQueue(state, scenario, ruleset, "military")) {
     return "Castle reserve";
   }
 
@@ -358,28 +584,22 @@ function tryApplyAction(
   action: Action,
   state: EngineState,
   ruleset: Ruleset,
+  scenario: ResolvedScenario,
   milestones: SimulationMilestones,
 ): boolean {
   switch (action.type) {
     case "assign_existing_villagers": {
-      let remaining = action.count;
-      const sourceTasks: Task[] = action.from
-        ? [action.from]
-        : ["idle", "sheep", "boar", "berries", "farms", "wood", "gold", "stone"];
-
-      for (const task of sourceTasks) {
-        while (remaining > 0 && (state.tasks[task] ?? 0) > 0) {
-          state.tasks[task] -= 1;
-          state.tasks[action.to] += 1;
-          remaining -= 1;
-        }
-
-        if (remaining === 0) {
-          break;
-        }
+      const selected = selectVillagers(state, action.count, sourceTasksForAction(action));
+      if (selected.length < action.count) {
+        return false;
       }
 
-      return remaining === 0;
+      for (const villager of selected) {
+        assignVillagerTask(villager, action.to, state, scenario.assumptions, true);
+      }
+
+      syncTaskCounts(state);
+      return true;
     }
 
     case "assign_next_villagers": {
@@ -401,6 +621,10 @@ function tryApplyAction(
         return false;
       }
 
+      if (ageRank(state.age) < ageRank(definition.age) || !meetsRequirements(state, definition.requirements)) {
+        return false;
+      }
+
       if (!canAfford(state.resources, definition.cost)) {
         return false;
       }
@@ -409,8 +633,8 @@ function tryApplyAction(
         return false;
       }
 
-      const returnTasks = allocateBuilders(state, action.builders, action.buildingId);
-      if (!returnTasks) {
+      const builders = allocateBuilders(state, action.builders, action.buildingId);
+      if (!builders) {
         return false;
       }
 
@@ -419,7 +643,7 @@ function tryApplyAction(
         laneId: action.buildingId === "house" ? "construction_auto" : "construction_main",
         buildingId: action.buildingId,
         endSec: state.timeSec + definition.buildTimeSec,
-        returnTasks,
+        builders,
         label: definition.name,
       });
       return true;
@@ -428,6 +652,18 @@ function tryApplyAction(
     case "train_once": {
       const definition = ruleset.units[action.unitId];
       if (!definition) {
+        return false;
+      }
+
+      if (ageRank(state.age) < ageRank(definition.age) || !meetsRequirements(state, definition.requirements)) {
+        return false;
+      }
+
+      if (action.atBuildingId === "archery_range" && shouldPauseQueue(state, scenario, ruleset, "military")) {
+        return false;
+      }
+
+      if (action.atBuildingId === "town_center" && shouldPauseQueue(state, scenario, ruleset, "town_center")) {
         return false;
       }
 
@@ -459,6 +695,10 @@ function tryApplyAction(
     case "research": {
       const definition = ruleset.techs[action.techId];
       if (!definition) {
+        return false;
+      }
+
+      if (ageRank(state.age) < ageRank(definition.age) || !meetsRequirements(state, definition.requirements)) {
         return false;
       }
 
@@ -564,7 +804,7 @@ function fireTriggeredEvents(
     state.firedEvents.add(event.id);
 
     for (const action of event.actions) {
-      const success = tryApplyAction(action, state, ruleset, milestones);
+      const success = tryApplyAction(action, state, ruleset, scenario, milestones);
       if (!success) {
         addPendingAction(state, action, event.id, state.timeSec);
       }
@@ -575,6 +815,7 @@ function fireTriggeredEvents(
 function processPendingActions(
   state: EngineState,
   ruleset: Ruleset,
+  scenario: ResolvedScenario,
   milestones: SimulationMilestones,
 ) {
   if (state.pendingActions.length === 0) {
@@ -583,7 +824,7 @@ function processPendingActions(
 
   for (let index = 0; index < state.pendingActions.length; index += 1) {
     const pending = state.pendingActions[index];
-    const success = tryApplyAction(pending.action, state, ruleset, milestones);
+    const success = tryApplyAction(pending.action, state, ruleset, scenario, milestones);
     if (success) {
       state.pendingActions.splice(index, 1);
       return true;
@@ -594,7 +835,7 @@ function processPendingActions(
 }
 
 function buildHousePolicyAction(scenario: ResolvedScenario, state: EngineState): Action | null {
-  const policy = scenario.policies.find((item: ResolvedScenario["policies"][number]) => item.kind === "auto_house" && item.enabled);
+  const policy = scenario.policies.find((item) => item.kind === "auto_house" && item.enabled);
   if (!policy || policy.kind !== "auto_house") {
     return null;
   }
@@ -625,24 +866,10 @@ function buildHousePolicyAction(scenario: ResolvedScenario, state: EngineState):
 function buildCastleAgePolicyAction(
   scenario: ResolvedScenario,
   state: EngineState,
+  ruleset: Ruleset,
 ): Action | null {
-  const policy = scenario.policies.find(
-    (item: ResolvedScenario["policies"][number]) => item.kind === "click_age_asap" && item.targetAge === "castle" && item.enabled,
-  );
-
-  if (!policy || policy.kind !== "click_age_asap") {
-    return null;
-  }
-
-  if (state.age !== "feudal") {
-    return null;
-  }
-
-  return {
-    type: "advance_age",
-    age: "castle",
-    priority: policy.priority,
-  };
+  const reserve = castleReserveStatus(state, scenario, ruleset);
+  return reserve.action;
 }
 
 function buildKeepQueueActions(scenario: ResolvedScenario, state: EngineState): Action[] {
@@ -665,20 +892,23 @@ function buildKeepQueueActions(scenario: ResolvedScenario, state: EngineState): 
     if (policy.producerType === "archery_range") {
       const rangeCount = producerByBuilding(state, "archery_range").length;
       if (rangeCount > 0) {
-        actions.push({
-          type: "train_once",
-          unitId: policy.productId,
-          atBuildingId: "archery_range",
-          priority: policy.priority,
-        });
+        const repeatCount = Math.min(policy.maxBuildings ?? rangeCount, rangeCount);
+        for (let index = 0; index < repeatCount; index += 1) {
+          actions.push({
+            type: "train_once",
+            unitId: policy.productId,
+            atBuildingId: "archery_range",
+            priority: policy.priority,
+          });
+        }
       }
     }
   }
 
-  return actions.sort((a, b) => {
-    const left = "priority" in a ? priorityScore(a.priority) : 9;
-    const right = "priority" in b ? priorityScore(b.priority) : 9;
-    return left - right;
+  return actions.sort((left, right) => {
+    const leftScore = "priority" in left ? priorityScore(left.priority) : 9;
+    const rightScore = "priority" in right ? priorityScore(right.priority) : 9;
+    return leftScore - rightScore;
   });
 }
 
@@ -689,18 +919,18 @@ function processPolicies(
   milestones: SimulationMilestones,
 ) {
   const houseAction = buildHousePolicyAction(scenario, state);
-  if (houseAction && tryApplyAction(houseAction, state, ruleset, milestones)) {
+  if (houseAction && tryApplyAction(houseAction, state, ruleset, scenario, milestones)) {
     return true;
   }
 
-  const castleAction = buildCastleAgePolicyAction(scenario, state);
-  if (castleAction && tryApplyAction(castleAction, state, ruleset, milestones)) {
+  const castleAction = buildCastleAgePolicyAction(scenario, state, ruleset);
+  if (castleAction && tryApplyAction(castleAction, state, ruleset, scenario, milestones)) {
     return true;
   }
 
   const queueActions = buildKeepQueueActions(scenario, state);
   for (const action of queueActions) {
-    if (tryApplyAction(action, state, ruleset, milestones)) {
+    if (tryApplyAction(action, state, ruleset, scenario, milestones)) {
       return true;
     }
   }
@@ -711,11 +941,15 @@ function processPolicies(
 function recordKeyframe(
   keyframes: Keyframe[],
   state: EngineState,
+  scenario: ResolvedScenario,
+  ruleset: Ruleset,
 ) {
+  const reserve = castleReserveStatus(state, scenario, ruleset);
+
   keyframes.push({
     timeSec: state.timeSec,
     stockpile: cloneStock(state.resources),
-    reserved: {},
+    reserved: reserve.active ? reserve.remaining : {},
     committed: {},
     age: state.age,
     population: state.population,
@@ -752,8 +986,65 @@ function summarizeBottleneck(run: SimulationRun): string | null {
     labelDurations.set(segment.label, current + Math.max(0, segment.endSec - segment.startSec));
   }
 
-  const [top] = [...labelDurations.entries()].sort((a, b) => b[1] - a[1]);
+  const [top] = [...labelDurations.entries()].sort((left, right) => right[1] - left[1]);
   return top?.[0] ?? null;
+}
+
+function villagerLaneId(villagerId: number) {
+  return `villager_${villagerId}`;
+}
+
+function villagerVisual(villager: VillagerState): Pick<LaneVisualState, "label" | "state"> {
+  switch (villager.task) {
+    case "sheep":
+      return { label: "Sheep", state: "gathering" };
+    case "boar":
+      return { label: "Boar", state: "gathering" };
+    case "berries":
+      return { label: "Berries", state: "gathering" };
+    case "farms":
+      return { label: "Farms", state: "gathering" };
+    case "wood":
+      return { label: "Wood", state: "gathering" };
+    case "gold":
+      return { label: "Gold", state: "gathering" };
+    case "stone":
+      return { label: "Stone", state: "gathering" };
+    case "build":
+      return { label: "Building", state: "building" };
+    case "walk":
+      return {
+        label: villager.pendingTask ? `Walk → ${villager.pendingTask}` : "Walking",
+        state: "walking",
+      };
+    case "idle":
+    default:
+      return { label: "Idle", state: "idle" };
+  }
+}
+
+function gatherResourcesForSecond(state: EngineState, ruleset: Ruleset) {
+  for (const task of Object.keys(state.tasks) as Task[]) {
+    const count = state.tasks[task] ?? 0;
+    if (count <= 0) {
+      continue;
+    }
+
+    const rate = ruleset.gatherRates[task];
+    if (rate <= 0) {
+      continue;
+    }
+
+    if (task === "wood") {
+      state.resources.wood += count * rate;
+    } else if (task === "gold") {
+      state.resources.gold += count * rate;
+    } else if (task === "stone") {
+      state.resources.stone += count * rate;
+    } else {
+      state.resources.food += count * rate;
+    }
+  }
 }
 
 export function runSimulation(
@@ -773,19 +1064,19 @@ export function runSimulation(
     bottleneckLabel: null,
   };
 
-  const producerVisuals = new Map<string, ProducerVisualState>();
+  const laneVisuals = new Map<string, LaneVisualState>();
   let currentAllocationStart = 0;
   let currentAllocationCounts = cloneTaskCounts(state.tasks);
 
-  function setProducerVisual(
+  function setLaneVisual(
     laneId: string,
-    stateName: ProducerVisualState["state"],
+    stateName: LaneVisualState["state"],
     label: string,
     startAt = state.timeSec,
   ) {
-    const current = producerVisuals.get(laneId);
+    const current = laneVisuals.get(laneId);
     if (!current) {
-      producerVisuals.set(laneId, {
+      laneVisuals.set(laneId, {
         state: stateName,
         label,
         startSec: startAt,
@@ -805,11 +1096,18 @@ export function runSimulation(
       state: current.state,
     });
 
-    producerVisuals.set(laneId, {
+    laneVisuals.set(laneId, {
       state: stateName,
       label,
       startSec: state.timeSec,
     });
+  }
+
+  function syncVillagerLaneVisuals() {
+    for (const villager of state.villagerRoster) {
+      const visual = villagerVisual(villager);
+      setLaneVisual(villagerLaneId(villager.id), visual.state, visual.label);
+    }
   }
 
   function flushAllocationIfChanged() {
@@ -828,7 +1126,7 @@ export function runSimulation(
   }
 
   function finalizeVisuals(totalTime: number) {
-    for (const [laneId, visual] of producerVisuals.entries()) {
+    for (const [laneId, visual] of laneVisuals.entries()) {
       laneSegments.push({
         laneId,
         label: visual.label,
@@ -845,43 +1143,24 @@ export function runSimulation(
     });
   }
 
+  syncVillagerLaneVisuals();
   fireTriggeredEvents(scenario, state, ruleset, milestones);
 
   let keepLooping = true;
   while (keepLooping) {
-    const progressedPending = processPendingActions(state, ruleset, milestones);
+    const progressedPending = processPendingActions(state, ruleset, scenario, milestones);
     const progressedPolicies = processPolicies(scenario, state, ruleset, milestones);
     keepLooping = progressedPending || progressedPolicies;
   }
 
-  recordKeyframe(keyframes, state);
+  syncVillagerLaneVisuals();
+  recordKeyframe(keyframes, state, scenario, ruleset);
 
-  const horizonSec = 26 * 60;
-
-  for (let second = 0; second < horizonSec; second += 1) {
-    for (const task of Object.keys(state.tasks) as Task[]) {
-      const count = state.tasks[task] ?? 0;
-      if (count <= 0) {
-        continue;
-      }
-
-      const rate = ruleset.gatherRates[task];
-      if (rate <= 0) {
-        continue;
-      }
-
-      if (task === "wood") {
-        state.resources.wood += count * rate;
-      } else if (task === "gold") {
-        state.resources.gold += count * rate;
-      } else if (task === "stone") {
-        state.resources.stone += count * rate;
-      } else {
-        state.resources.food += count * rate;
-      }
-    }
-
+  for (let second = 0; second < DEFAULT_HORIZON_SEC; second += 1) {
+    gatherResourcesForSecond(state, ruleset);
     state.timeSec += 1;
+
+    updateWalkingVillagers(state);
 
     const finishedTraining = state.trainingJobs.filter((job) => job.endSec <= state.timeSec);
     state.trainingJobs = state.trainingJobs.filter((job) => job.endSec > state.timeSec);
@@ -895,11 +1174,18 @@ export function runSimulation(
       }
 
       if (job.unitId === "villager") {
-        state.villagers += 1;
-        state.units.villager = (state.units.villager ?? 0) + 1;
-        state.population += 1;
         const nextTask = taskForNewVillager(state);
-        state.tasks[nextTask] += 1;
+        const villager: VillagerState = {
+          id: state.nextVillagerId,
+          task: "idle",
+          pendingTask: null,
+          walkUntil: null,
+        };
+        state.nextVillagerId += 1;
+        state.villagerRoster.push(villager);
+        assignVillagerTask(villager, nextTask, state, scenario.assumptions, true);
+        state.population += 1;
+        syncTaskCounts(state);
       } else {
         state.units[job.unitId] = (state.units[job.unitId] ?? 0) + 1;
         state.population += ruleset.units[job.unitId]?.populationCost ?? 0;
@@ -936,7 +1222,7 @@ export function runSimulation(
       if (job.buildingId === "house") {
         state.popCap += ruleset.buildings.house.populationProvided;
       }
-      releaseBuilders(state, job.returnTasks);
+      releaseBuilders(state, job.builders, scenario.assumptions);
       state.completedEntityRefs.add(job.buildingId);
       addProducerIfNeeded(state, job.buildingId);
     }
@@ -946,10 +1232,12 @@ export function runSimulation(
 
     let progressed = true;
     while (progressed) {
-      const progressedPending = processPendingActions(state, ruleset, milestones);
+      const progressedPending = processPendingActions(state, ruleset, scenario, milestones);
       const progressedPolicies = processPolicies(scenario, state, ruleset, milestones);
       progressed = progressedPending || progressedPolicies;
     }
+
+    syncVillagerLaneVisuals();
 
     for (const producer of state.producers.values()) {
       if (!producer.built) {
@@ -957,47 +1245,56 @@ export function runSimulation(
       }
 
       if (producer.busyUntil > state.timeSec) {
-        const producerState =
-          producer.state === "researching" ? "researching" : producer.state === "training" ? "training" : "idle";
-        setProducerVisual(producer.key, producerState, producer.label);
+        const producerState = producer.state === "researching" ? "researching" : producer.state === "training" ? "training" : "idle";
+        setLaneVisual(producer.key, producerState, producer.label);
         continue;
       }
 
       if (producer.buildingId === "town_center") {
         const reason = queueBlockedReason(state, ruleset, "town_center", scenario);
-        setProducerVisual(producer.key, reason === "Idle" ? "idle" : "blocked", reason);
+        setLaneVisual(producer.key, reason === "Idle" ? "idle" : "blocked", reason);
       } else if (producer.buildingId === "archery_range") {
         const reason = queueBlockedReason(state, ruleset, "archery_range", scenario);
-        setProducerVisual(producer.key, reason === "Idle" ? "idle" : "blocked", reason);
+        setLaneVisual(producer.key, reason === "Idle" ? "idle" : "blocked", reason);
       } else {
-        setProducerVisual(producer.key, "idle", "Idle");
+        setLaneVisual(producer.key, "idle", "Idle");
       }
     }
 
     const activeConstruction = state.buildJobs
       .filter((job) => job.laneId === "construction_main")
-      .sort((a, b) => a.endSec - b.endSec)[0];
+      .sort((left, right) => left.endSec - right.endSec)[0];
 
     if (activeConstruction) {
-      setProducerVisual("construction_main", "building", activeConstruction.label, activeConstruction.endSec - ruleset.buildings[activeConstruction.buildingId].buildTimeSec);
-    } else if (producerVisuals.has("construction_main")) {
-      setProducerVisual("construction_main", "idle", "Idle");
+      setLaneVisual(
+        "construction_main",
+        "building",
+        activeConstruction.label,
+        activeConstruction.endSec - ruleset.buildings[activeConstruction.buildingId].buildTimeSec,
+      );
+    } else if (laneVisuals.has("construction_main")) {
+      setLaneVisual("construction_main", "idle", "Idle");
     }
 
     const activeAutoConstruction = state.buildJobs
       .filter((job) => job.laneId === "construction_auto")
-      .sort((a, b) => a.endSec - b.endSec)[0];
+      .sort((left, right) => left.endSec - right.endSec)[0];
 
     if (activeAutoConstruction) {
-      setProducerVisual("construction_auto", "building", activeAutoConstruction.label, activeAutoConstruction.endSec - ruleset.buildings[activeAutoConstruction.buildingId].buildTimeSec);
-    } else if (producerVisuals.has("construction_auto")) {
-      setProducerVisual("construction_auto", "idle", "Idle");
+      setLaneVisual(
+        "construction_auto",
+        "building",
+        activeAutoConstruction.label,
+        activeAutoConstruction.endSec - ruleset.buildings[activeAutoConstruction.buildingId].buildTimeSec,
+      );
+    } else if (laneVisuals.has("construction_auto")) {
+      setLaneVisual("construction_auto", "idle", "Idle");
     }
 
     flushAllocationIfChanged();
 
     if (state.timeSec % 5 === 0 || finishedResearch.length > 0 || finishedBuilds.length > 0 || finishedTraining.length > 0) {
-      recordKeyframe(keyframes, state);
+      recordKeyframe(keyframes, state, scenario, ruleset);
     }
 
     if (state.age === "castle" && state.timeSec > (milestones.ageReachedAt.castle ?? 0) + 90) {
@@ -1014,8 +1311,8 @@ export function runSimulation(
     answers: [],
     warnings: [],
     keyframes,
-    laneSegments: laneSegments.filter((segment: LaneSegment) => segment.endSec > segment.startSec),
-    allocationSegments: allocationSegments.filter((segment: SimulationRun["allocationSegments"][number]) => segment.endSec > segment.startSec),
+    laneSegments: laneSegments.filter((segment) => segment.endSec > segment.startSec),
+    allocationSegments: allocationSegments.filter((segment) => segment.endSec > segment.startSec),
   });
 
   milestones.bottleneckLabel = summarizeBottleneck(baseRun);

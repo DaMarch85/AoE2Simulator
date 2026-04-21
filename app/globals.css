@@ -55,6 +55,19 @@ textarea {
   background: rgba(192, 132, 252, 0.3);
 }
 
+:where(
+  .rounded,
+  .rounded-sm,
+  .rounded-md,
+  .rounded-lg,
+  .rounded-xl,
+  .rounded-2xl,
+  .rounded-3xl,
+  .rounded-full
+) {
+  border-radius: 0 !important;
+}
+
 .container-shell {
   width: min(1440px, calc(100vw - 32px));
   margin: 0 auto;
@@ -64,21 +77,21 @@ textarea {
   border: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.84), rgba(15, 23, 42, 0.65));
   box-shadow: 0 24px 64px rgba(2, 6, 23, 0.36);
-  border-radius: 20px;
+  border-radius: 0;
   backdrop-filter: blur(12px);
 }
 
 .panel-subtle {
   border: 1px solid var(--line);
   background: rgba(15, 23, 42, 0.52);
-  border-radius: 16px;
+  border-radius: 0;
 }
 
 .badge {
   border: 1px solid var(--line);
   background: rgba(30, 41, 59, 0.72);
   color: var(--muted);
-  border-radius: 999px;
+  border-radius: 0;
   padding: 0.25rem 0.625rem;
   font-size: 0.75rem;
   line-height: 1rem;
@@ -106,7 +119,7 @@ textarea {
 
 .stat-card {
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 0;
   background: rgba(15, 23, 42, 0.58);
   padding: 1rem;
 }
@@ -115,6 +128,14 @@ textarea {
   display: grid;
   grid-template-columns: minmax(320px, 360px) minmax(0, 1fr) minmax(280px, 320px);
   gap: 1rem;
+}
+
+summary {
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
 }
 
 @media (max-width: 1200px) {
