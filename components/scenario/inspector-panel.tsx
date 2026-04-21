@@ -10,7 +10,7 @@ function closestKeyframe(run: SimulationRun, timeSec: number): Keyframe {
   );
 }
 
-function taskLine(label: string, value: number) {
+function taskLine(label: string, value: string | number) {
   return (
     <div className="flex items-center justify-between text-sm">
       <span className="text-slate-400">{label}</span>
