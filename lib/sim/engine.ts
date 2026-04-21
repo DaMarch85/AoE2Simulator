@@ -110,10 +110,11 @@ function createState(ruleset: Ruleset): EngineState {
       blacksmith: 0,
       market: 0,
     },
-    tasks: {
-      ...createEmptyTaskCounts(),
-      sheep: ruleset.startingVillagers,
-    },
+    tasks: (() => {
+      const tasks = createEmptyTaskCounts();
+      tasks.sheep = ruleset.startingVillagers;
+      return tasks;
+    })(),
     nextVillagerAssignments: [],
     pendingActions: [],
     completedEntityRefs: new Set<string>(),
