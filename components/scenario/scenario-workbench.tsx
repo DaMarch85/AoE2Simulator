@@ -1,17 +1,25 @@
-"use client";
+'use client';
 
-import { useEffect, useMemo, useState } from "react";
-import { AssumptionBar } from "./assumption-bar";
-import { BuilderTabs } from "./builder-tabs";
-import { InspectorPanel } from "./inspector-panel";
-import { KpiBar } from "./kpi-bar";
-import { ResourceGraph } from "./resource-graph";
-import { TimelineViewport } from "./timeline-viewport";
-import { WarningsRail } from "./warnings-rail";
-import { simulateScenario } from "@/lib/sim";
-import type { ResolvedScenario, Ruleset, ScenarioDraft, SimulationRun } from "@/lib/sim/schema";
+import { useEffect, useMemo, useState } from 'react';
+import { AssumptionBar } from './assumption-bar';
+import { BuilderTabs } from './builder-tabs';
+import { CollectionRatePanel } from './collection-rate-panel';
+import { InspectorPanel } from './inspector-panel';
+import { KpiBar } from './kpi-bar';
+import { ResourceGraph } from './resource-graph';
+import { TimelineViewport } from './timeline-viewport';
+import { UnitCountGraph } from './unit-count-graph';
+import { WarningsRail } from './warnings-rail';
+import { simulateScenario } from '@/lib/sim';
+import {
+  type ResolvedScenario,
+  type Ruleset,
+  type ScenarioDraft,
+  type SimulationRun,
+  ScenarioDraftSchema,
+} from '@/lib/sim/schema';
 
-type TabId = "setup" | "events" | "policies" | "questions" | "json";
+type TabId = 'setup' | 'events' | 'policies' | 'questions' | 'json';
 
 function storageKey(id: string) {
   return `aoe2-build-lab:${id}`;
@@ -28,24 +36,22 @@ export function ScenarioWorkbench({
   const initialResolvedAndRun = useMemo(() => simulateScenario(initialDraft, ruleset), [initialDraft, ruleset]);
   const [resolved, setResolved] = useState<ResolvedScenario>(initialResolvedAndRun.resolved);
   const [run, setRun] = useState<SimulationRun>(initialResolvedAndRun.run);
-  const [activeTab, setActiveTab] = useState<TabId>("setup");
+  const [activeTab, setActiveTab] = useState<TabId>('setup');
   const [cursorTime, setCursorTime] = useState<number>(0);
   const [isDirty, setIsDirty] = useState(false);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(storageKey(initialDraft.id));
-    if (!raw) {
-      return;
-    }
+    if (!raw) return;
 
     try {
-      const parsed = JSON.parse(raw) as ScenarioDraft;
+      const parsed = ScenarioDraftSchema.parse(JSON.parse(raw));
       setDraft(parsed);
       const result = simulateScenario(parsed, ruleset);
       setResolved(result.resolved);
       setRun(result.run);
     } catch {
-      // Ignore broken local drafts and fall back to the fixture.
+      // Ignore broken or stale local drafts and fall back to the fixture.
     }
   }, [initialDraft.id, ruleset]);
 
@@ -59,7 +65,9 @@ export function ScenarioWorkbench({
   };
 
   const handleRun = () => {
-    const result = simulateScenario(draft, ruleset);
+    const normalizedDraft = ScenarioDraftSchema.parse(draft);
+    const result = simulateScenario(normalizedDraft, ruleset);
+    setDraft(normalizedDraft);
     setResolved(result.resolved);
     setRun(result.run);
     setCursorTime(0);
@@ -79,8 +87,8 @@ export function ScenarioWorkbench({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <span className={isDirty ? "badge badge-warning" : "badge badge-success"}>
-              {isDirty ? "Draft changed" : "Run up to date"}
+            <span className={isDirty ? 'badge badge-warning' : 'badge badge-success'}>
+              {isDirty ? 'Draft changed' : 'Run up to date'}
             </span>
             <button
               type="button"
@@ -93,14 +101,14 @@ export function ScenarioWorkbench({
                 setIsDirty(false);
                 window.localStorage.removeItem(storageKey(initialDraft.id));
               }}
-              className="rounded-full border border-slate-700/70 bg-slate-900/45 px-4 py-2 text-sm text-slate-200"
+              className="border border-slate-700/70 bg-slate-900/45 px-4 py-2 text-sm text-slate-200"
             >
               Reset
             </button>
             <button
               type="button"
               onClick={handleRun}
-              className="rounded-full border border-violet-400/40 bg-violet-500/20 px-4 py-2 text-sm font-medium text-violet-100"
+              className="border border-violet-400/40 bg-violet-500/20 px-4 py-2 text-sm font-medium text-violet-100"
             >
               Run sim
             </button>
@@ -123,6 +131,8 @@ export function ScenarioWorkbench({
         <div className="space-y-4">
           <TimelineViewport run={run} cursorTime={cursorTime} onCursorChange={setCursorTime} />
           <ResourceGraph run={run} cursorTime={cursorTime} />
+          <UnitCountGraph run={run} cursorTime={cursorTime} />
+          <CollectionRatePanel ruleset={ruleset} />
           <WarningsRail run={run} />
         </div>
 
@@ -134,21 +144,21 @@ export function ScenarioWorkbench({
           <div>
             <h3 className="text-sm font-semibold text-slate-200">Developer notes</h3>
             <p className="text-xs text-slate-400">
-              This scaffold keeps persistence local and the engine intentionally lightweight.
+              This version tracks villagers individually, models finite early food, and keeps editing form-first.
             </p>
           </div>
           <span className="badge">Run length: {Math.round(totalTime / 60)}m</span>
         </div>
 
         <div className="grid gap-3 xl:grid-cols-2">
-          <details className="rounded-2xl border border-slate-700/70 bg-slate-950/45 p-4">
+          <details className="border border-slate-700/70 bg-slate-950/45 p-4">
             <summary className="cursor-pointer text-sm font-medium text-slate-100">Resolved scenario JSON</summary>
             <pre className="mt-3 max-h-96 overflow-auto text-xs text-slate-300">
               {JSON.stringify(resolved, null, 2)}
             </pre>
           </details>
 
-          <details className="rounded-2xl border border-slate-700/70 bg-slate-950/45 p-4">
+          <details className="border border-slate-700/70 bg-slate-950/45 p-4">
             <summary className="cursor-pointer text-sm font-medium text-slate-100">Run output JSON</summary>
             <pre className="mt-3 max-h-96 overflow-auto text-xs text-slate-300">
               {JSON.stringify(run, null, 2)}

@@ -1,35 +1,15 @@
-import type {
-  ResolvedScenario,
-  Ruleset,
-  SimulationRun,
-  Warning,
-} from "./schema";
-import { WarningSchema } from "./schema";
-import type { SimulationMilestones } from "./answers";
-
-function sumDurationsByLabel(run: SimulationRun) {
-  const durations = new Map<string, number>();
-
-  for (const segment of run.laneSegments) {
-    if (segment.state !== "blocked") {
-      continue;
-    }
-
-    const current = durations.get(segment.label) ?? 0;
-    durations.set(segment.label, current + Math.max(0, segment.endSec - segment.startSec));
-  }
-
-  return durations;
-}
+import type { ResolvedScenario, Ruleset, SimulationRun, Warning } from './schema';
+import { WarningSchema } from './schema';
+import type { SimulationMilestones } from './answers';
 
 export function buildWarnings(
-  run: SimulationRun,
+  _run: SimulationRun,
   scenario: ResolvedScenario,
   _ruleset: Ruleset,
   milestones: SimulationMilestones,
+  blockedDurations: Map<string, number>,
 ): Warning[] {
   const warnings: Warning[] = [];
-  const blockedDurations = sumDurationsByLabel(run);
 
   for (const issue of scenario.issues) {
     warnings.push(
@@ -41,49 +21,56 @@ export function buildWarnings(
     );
   }
 
-  const rangeGoldBlock = blockedDurations.get("Missing gold") ?? 0;
-  if (rangeGoldBlock > 0) {
+  const goldShort = blockedDurations.get('Missing gold') ?? 0;
+  if (goldShort > 0) {
     warnings.push(
       WarningSchema.parse({
-        code: "range-missing-gold",
-        severity: "info",
-        message: `Range idle for about ${Math.round(rangeGoldBlock)}s because gold was short.`,
+        code: 'missing-gold',
+        severity: 'info',
+        message: `A production queue was blocked by gold for about ${Math.round(goldShort)}s.`,
       }),
     );
   }
 
-  const rangeReserveBlock = blockedDurations.get("Castle reserve") ?? 0;
-  if (rangeReserveBlock > 0) {
+  const foodShort = blockedDurations.get('Missing food') ?? 0;
+  if (foodShort > 0) {
     warnings.push(
       WarningSchema.parse({
-        code: "range-castle-reserve",
-        severity: "info",
-        message: `Range queue was paused for about ${Math.round(rangeReserveBlock)}s to preserve the Castle Age click.`,
+        code: 'missing-food',
+        severity: 'info',
+        message: `A production queue was blocked by food for about ${Math.round(foodShort)}s.`,
       }),
     );
   }
 
-  const houseBlock = blockedDurations.get("Need house") ?? 0;
-  if (houseBlock > 0) {
+  const woodShort = blockedDurations.get('Missing wood') ?? 0;
+  if (woodShort > 0) {
     warnings.push(
       WarningSchema.parse({
-        code: "need-house",
-        severity: "warning",
-        message: `Population cap caused about ${Math.round(houseBlock)}s of blocked production.`,
+        code: 'missing-wood',
+        severity: 'info',
+        message: `A production queue was blocked by wood for about ${Math.round(woodShort)}s.`,
       }),
     );
   }
 
-  const affordable = milestones.ageAffordableAt.castle;
-  const clicked = milestones.ageClickedAt.castle;
-  if (affordable != null && clicked != null && clicked > affordable) {
+  const needHouse = blockedDurations.get('Need house') ?? 0;
+  if (needHouse > 0) {
     warnings.push(
       WarningSchema.parse({
-        code: "castle-click-delayed",
-        severity: "info",
-        message: `Castle became affordable ${Math.round(clicked - affordable)}s before it was clicked.`,
-        startSec: affordable,
-        endSec: clicked,
+        code: 'need-house',
+        severity: 'warning',
+        message: `Population cap blocked production for about ${Math.round(needHouse)}s.`,
+      }),
+    );
+  }
+
+  if (milestones.ageClickedAt.castle == null) {
+    warnings.push(
+      WarningSchema.parse({
+        code: 'castle-not-clicked',
+        severity: 'warning',
+        message: 'Castle Age was never clicked within the current simulation horizon.',
       }),
     );
   }
