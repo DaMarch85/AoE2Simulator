@@ -245,6 +245,7 @@ export function compileBuildOrderEvents(
             queueCategory: queueCategoryForProducer(producerType),
             startRef: defaultStartRef,
             completeRef: defaultCompleteRef,
+            walkTilesBeforeTasks: [],
           },
         ],
       });

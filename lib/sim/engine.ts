@@ -1281,22 +1281,25 @@ function buildKeepQueueActions(scenario: ResolvedScenario, state: EngineState) {
       continue;
     }
 
-    if (!['town_center', 'archery_range', 'stable', 'barracks'].includes(policy.producerType)) {
+    const producerType = policy.producerType;
+    if (!['town_center', 'archery_range', 'stable', 'barracks'].includes(producerType)) {
       continue;
     }
 
-    const producerCount = producerByBuilding(state, policy.producerType).length;
-    if (policy.producerType !== 'town_center' && producerCount === 0) {
+    const typedProducer = producerType as 'town_center' | 'archery_range' | 'stable' | 'barracks';
+    const producerCount = producerByBuilding(state, typedProducer).length;
+    if (typedProducer !== 'town_center' && producerCount === 0) {
       continue;
     }
 
     actions.push({
-      rank: rankForProducer(policy.producerType),
+      rank: rankForProducer(typedProducer),
       action: {
         type: 'train_once',
         unitId: policy.productId,
-        atBuildingId: policy.producerType,
+        atBuildingId: typedProducer,
         priority: policy.priority,
+        walkTilesBeforeTasks: [],
       },
     });
   }
