@@ -92,6 +92,8 @@ export function resolveScenario(draftInput: ScenarioDraft, ruleset: Ruleset): Re
           buildingId: 'barracks',
           builders: 1,
           priority: 'high',
+          walkToStartTiles: 0,
+          walkAfterCompleteTiles: 0,
         },
       ],
       source: 'inferred',
