@@ -29,6 +29,7 @@ import {
   sameTaskCounts,
   spend,
   taskLabel,
+  tilesToSeconds,
   walkSeconds,
 } from './helpers';
 
@@ -51,8 +52,10 @@ interface TrainingJob {
   unitId: string;
   startSec: number;
   endSec: number;
+  startRef?: string;
   completeRef?: string;
   assignedTasks?: Task[];
+  walkTilesBeforeTasks?: number[];
 }
 
 interface ResearchJob {
@@ -61,6 +64,7 @@ interface ResearchJob {
   startSec: number;
   endSec: number;
   ageTarget?: Age;
+  startRef?: string;
   completeRef?: string;
 }
 
@@ -75,6 +79,7 @@ interface BuildJob {
   returnTasks: Record<number, Task>;
   started: boolean;
   completeRef?: string;
+  walkAfterCompleteTiles: number;
 }
 
 interface Villager {
@@ -87,6 +92,7 @@ interface Villager {
   farmBuildUntil: number | null;
   farmFoodRemaining: number;
   orders: Task[];
+  walkTilesBeforeTasks: number[];
   orderIndex: number;
 }
 
@@ -157,6 +163,7 @@ function createState(ruleset: Ruleset, scenario: ResolvedScenario): EngineState 
       farmBuildUntil: null,
       farmFoodRemaining: 0,
       orders: [],
+      walkTilesBeforeTasks: [],
       orderIndex: -1,
     });
     tasks.sheep += 1;
@@ -313,8 +320,17 @@ function setVillagerTaskImmediate(state: EngineState, villager: Villager, task: 
   setVillagerVisual(state, villager, visualState, label);
 }
 
-function startVillagerWalk(state: EngineState, villager: Villager, nextTask: Task, label: string) {
-  const travelTime = walkSeconds(nextTask, stateAssumptions(state).walkProfile);
+function startVillagerWalk(
+  state: EngineState,
+  villager: Villager,
+  nextTask: Task,
+  label: string,
+  explicitTiles = 0,
+) {
+  const travelTime =
+    explicitTiles > 0
+      ? tilesToSeconds(explicitTiles)
+      : walkSeconds(nextTask, stateAssumptions(state).walkProfile);
   if (travelTime <= 0) {
     setVillagerTaskImmediate(state, villager, nextTask, label);
     return;
@@ -333,35 +349,65 @@ function startVillagerWalk(state: EngineState, villager: Villager, nextTask: Tas
   setVillagerVisual(state, villager, 'walking', label);
 }
 
-function setVillagerPlan(state: EngineState, villager: Villager, tasks: Task[]) {
-  villager.orders = [...tasks];
-  villager.orderIndex = tasks.length > 0 ? 0 : -1;
-  const firstTask = tasks[0] ?? 'idle';
-  if (state.timeSec === 0) {
-    setVillagerTaskImmediate(state, villager, firstTask, taskLabel(firstTask));
-  } else if (firstTask === 'idle') {
+function transitionVillagerToTask(
+  state: EngineState,
+  ruleset: Ruleset,
+  villager: Villager,
+  nextTask: Task,
+  explicitTiles = 0,
+) {
+  if (nextTask === 'farms') {
+    tryStartFarmForVillager(state, ruleset, villager, explicitTiles);
+    return;
+  }
+
+  if (nextTask === 'idle' && explicitTiles <= 0) {
     setVillagerTaskImmediate(state, villager, 'idle', 'Idle');
-  } else if (firstTask === 'farms') {
-    tryStartFarmForVillager(state, ACTIVE_RULESET!, villager);
-  } else {
-    startVillagerWalk(state, villager, firstTask, `Walk to ${taskLabel(firstTask).toLowerCase()}`);
+    return;
   }
+
+  if (explicitTiles <= 0 && state.timeSec === 0 && nextTask !== 'idle') {
+    setVillagerTaskImmediate(state, villager, nextTask, taskLabel(nextTask));
+    return;
+  }
+
+  startVillagerWalk(state, villager, nextTask, `Walk to ${taskLabel(nextTask).toLowerCase()}`, explicitTiles);
 }
 
-function nextPlannedTask(villager: Villager): Task | null {
+function setVillagerPlan(
+  state: EngineState,
+  villager: Villager,
+  tasks: Task[],
+  walkTilesBeforeTasks: number[] = [],
+) {
+  villager.orders = [...tasks];
+  villager.walkTilesBeforeTasks = [...walkTilesBeforeTasks];
+  villager.orderIndex = tasks.length > 0 ? 0 : -1;
+
+  const firstTask = tasks[0] ?? 'idle';
+  const firstWalkTiles = walkTilesBeforeTasks[0] ?? 0;
+
+  transitionVillagerToTask(state, ACTIVE_RULESET!, villager, firstTask, firstWalkTiles);
+}
+
+function nextPlannedTask(villager: Villager): { task: Task | null; walkTiles: number } {
   if (villager.orderIndex < 0) {
-    return null;
+    return { task: null, walkTiles: 0 };
   }
-  return villager.orders[villager.orderIndex + 1] ?? null;
+  const nextIndex = villager.orderIndex + 1;
+  return {
+    task: villager.orders[nextIndex] ?? null,
+    walkTiles: villager.walkTilesBeforeTasks[nextIndex] ?? 0,
+  };
 }
 
-function stepVillagerPlan(state: EngineState, villager: Villager): Task | null {
-  const nextTask = nextPlannedTask(villager);
-  if (!nextTask) {
-    return null;
+function stepVillagerPlan(_state: EngineState, villager: Villager): { task: Task | null; walkTiles: number } {
+  const next = nextPlannedTask(villager);
+  if (!next.task) {
+    return { task: null, walkTiles: 0 };
   }
   villager.orderIndex += 1;
-  return nextTask;
+  return next;
 }
 
 let ACTIVE_ASSUMPTIONS: ResolvedScenario['assumptions'] | null = null;
@@ -471,7 +517,9 @@ function producerByBuilding(state: EngineState, buildingId: string) {
 }
 
 function idleProducer(state: EngineState, buildingId: string) {
-  return producerByBuilding(state, buildingId).find((producer) => producer.busyUntil <= state.timeSec);
+  return producerByBuilding(state, buildingId)
+    .filter((producer) => producer.built)
+    .sort((a, b) => a.busyUntil - b.busyUntil)[0];
 }
 
 function addProducerIfNeeded(state: EngineState, ruleset: Ruleset, buildingId: string) {
@@ -684,7 +732,12 @@ function blockedReasonForTrain(
   return null;
 }
 
-function tryStartFarmForVillager(state: EngineState, ruleset: Ruleset, villager: Villager) {
+function tryStartFarmForVillager(
+  state: EngineState,
+  ruleset: Ruleset,
+  villager: Villager,
+  walkTilesOverride = 0,
+) {
   const farmCost = ruleset.startingFoodSources.farmWoodCost;
   if (state.resources.wood < farmCost) {
     if (villager.task !== 'idle') {
@@ -696,7 +749,10 @@ function tryStartFarmForVillager(state: EngineState, ruleset: Ruleset, villager:
   }
 
   spend(state.resources, { wood: farmCost });
-  const walkTime = walkSeconds('farms', stateAssumptions(state).walkProfile);
+  const walkTime =
+    walkTilesOverride > 0
+      ? tilesToSeconds(walkTilesOverride)
+      : walkSeconds('farms', stateAssumptions(state).walkProfile);
 
   if (villager.task !== 'walk') {
     decrementTask(state, villager.task);
@@ -714,12 +770,8 @@ function tryStartFarmForVillager(state: EngineState, ruleset: Ruleset, villager:
 
 function reassignVillagerToFood(state: EngineState, ruleset: Ruleset, villager: Villager) {
   const nextPlanned = stepVillagerPlan(state, villager);
-  if (nextPlanned) {
-    if (nextPlanned === 'farms') {
-      tryStartFarmForVillager(state, ruleset, villager);
-    } else {
-      startVillagerWalk(state, villager, nextPlanned, `Walk to ${taskLabel(nextPlanned).toLowerCase()}`);
-    }
+  if (nextPlanned.task) {
+    transitionVillagerToTask(state, ruleset, villager, nextPlanned.task, nextPlanned.walkTiles);
     return;
   }
 
@@ -729,14 +781,8 @@ function reassignVillagerToFood(state: EngineState, ruleset: Ruleset, villager: 
     return;
   }
 
-  if (next === 'farms') {
-    tryStartFarmForVillager(state, ruleset, villager);
-    return;
-  }
-
-  startVillagerWalk(state, villager, next, `Walk to ${taskLabel(next).toLowerCase()}`);
+  transitionVillagerToTask(state, ruleset, villager, next, 0);
 }
-
 
 function applyFoodFallbacks(state: EngineState, ruleset: Ruleset) {
   for (const villager of state.villagers) {
@@ -762,10 +808,10 @@ function applyFoodFallbacks(state: EngineState, ruleset: Ruleset) {
     }
     if (villager.task === 'farms' && villager.farmFoodRemaining <= 0) {
       const nextPlanned = stepVillagerPlan(state, villager);
-      if (nextPlanned && nextPlanned !== 'farms') {
-        startVillagerWalk(state, villager, nextPlanned, `Walk to ${taskLabel(nextPlanned).toLowerCase()}`);
+      if (nextPlanned.task && nextPlanned.task !== 'farms') {
+        transitionVillagerToTask(state, ruleset, villager, nextPlanned.task, nextPlanned.walkTiles);
       } else {
-        if (nextPlanned === 'farms') {
+        if (nextPlanned.task === 'farms') {
           villager.orderIndex -= 1;
         }
         tryStartFarmForVillager(state, ruleset, villager);
@@ -830,7 +876,8 @@ function tryApplyAction(
       if (!villager) {
         return false;
       }
-      setVillagerPlan(state, villager, action.tasks);
+      setVillagerPlan(state, villager, action.tasks, action.walkTilesBeforeTasks);
+      addEventRef(state, action.startRef);
       return true;
     }
 
@@ -850,13 +897,29 @@ function tryApplyAction(
         return false;
       }
 
-      const builders = action.builderVillagerId != null
+      const builders = action.builderVillagerIds && action.builderVillagerIds.length > 0
         ? (() => {
-            const villager = state.villagers.find((item) => item.id === action.builderVillagerId);
-            if (!villager || villager.pendingBuildJobId || villager.farmBuildUntil != null || villager.task === 'walk' || villager.task === 'build') {
+            const explicitBuilders = action.builderVillagerIds
+              .map((villagerId) => state.villagers.find((item) => item.id === villagerId))
+              .filter((villager): villager is Villager => Boolean(villager));
+
+            if (explicitBuilders.length !== action.builderVillagerIds.length) {
               return null;
             }
-            return [villager];
+
+            if (
+              explicitBuilders.some(
+                (villager) =>
+                  villager.pendingBuildJobId ||
+                  villager.farmBuildUntil != null ||
+                  villager.task === 'walk' ||
+                  villager.task === 'build',
+              )
+            ) {
+              return null;
+            }
+
+            return explicitBuilders;
           })()
         : chooseVillagers(state, action.builders, villagerSourcePreferenceForBuilding(action.buildingId));
       if (!builders) {
@@ -864,7 +927,12 @@ function tryApplyAction(
       }
 
       spend(state.resources, definition.cost);
-      const walkTime = walkSeconds('build', stateAssumptions(state).walkProfile);
+      addEventRef(state, action.startRef);
+
+      const walkTime =
+        action.walkToStartTiles > 0
+          ? tilesToSeconds(action.walkToStartTiles)
+          : walkSeconds('build', stateAssumptions(state).walkProfile);
       const buildStartSec = state.timeSec + walkTime;
       const endSec = buildStartSec + definition.buildTimeSec;
       const jobId = `build_${++state.buildJobCounter}`;
@@ -894,6 +962,7 @@ function tryApplyAction(
         returnTasks,
         started: false,
         completeRef: action.completeRef,
+        walkAfterCompleteTiles: action.walkAfterCompleteTiles,
       });
 
       pushRawSegment(state, {
@@ -933,21 +1002,27 @@ function tryApplyAction(
         return false;
       }
 
+      const startSec = Math.max(state.timeSec, producer.busyUntil);
+      const endSec = startSec + definition.buildTimeSec;
+
       spend(state.resources, definition.cost);
-      producer.busyUntil = state.timeSec + definition.buildTimeSec;
+      producer.busyUntil = endSec;
+      addEventRef(state, action.startRef);
       state.trainingJobs.push({
         producerKey: producer.key,
         unitId: action.unitId,
-        startSec: state.timeSec,
-        endSec: producer.busyUntil,
+        startSec,
+        endSec,
+        startRef: action.startRef,
         completeRef: action.completeRef,
         assignedTasks: action.assignedTasks,
+        walkTilesBeforeTasks: action.walkTilesBeforeTasks,
       });
       pushRawSegment(state, {
         laneId: producer.key,
         label: definition.name,
-        startSec: state.timeSec,
-        endSec: producer.busyUntil,
+        startSec,
+        endSec,
         state: 'training',
         count: 1,
       });
@@ -964,20 +1039,25 @@ function tryApplyAction(
         return false;
       }
 
+      const startSec = Math.max(state.timeSec, producer.busyUntil);
+      const endSec = startSec + definition.researchTimeSec;
+
       spend(state.resources, definition.cost);
-      producer.busyUntil = state.timeSec + definition.researchTimeSec;
+      producer.busyUntil = endSec;
+      addEventRef(state, action.startRef);
       state.researchJobs.push({
         producerKey: producer.key,
         techId: action.techId,
-        startSec: state.timeSec,
-        endSec: producer.busyUntil,
+        startSec,
+        endSec,
+        startRef: action.startRef,
         completeRef: action.completeRef,
       });
       pushRawSegment(state, {
         laneId: producer.key,
         label: definition.name,
-        startSec: state.timeSec,
-        endSec: producer.busyUntil,
+        startSec,
+        endSec,
         state: 'researching',
       });
       return true;
@@ -991,21 +1071,25 @@ function tryApplyAction(
         return false;
       }
 
+      const startSec = Math.max(state.timeSec, producer.busyUntil);
+      const endSec = startSec + tech.researchTimeSec;
+
       spend(state.resources, tech.cost);
-      producer.busyUntil = state.timeSec + tech.researchTimeSec;
+      producer.busyUntil = endSec;
       state.researchJobs.push({
         producerKey: producer.key,
         techId,
-        startSec: state.timeSec,
-        endSec: producer.busyUntil,
+        startSec,
+        endSec,
         ageTarget: action.age,
+        startRef: action.startRef,
         completeRef: action.completeRef,
       });
       pushRawSegment(state, {
         laneId: producer.key,
         label: tech.name,
-        startSec: state.timeSec,
-        endSec: producer.busyUntil,
+        startSec,
+        endSec,
         state: 'researching',
       });
       milestones.ageClickedAt[action.age] = state.timeSec;
@@ -1197,29 +1281,21 @@ function buildKeepQueueActions(scenario: ResolvedScenario, state: EngineState) {
       continue;
     }
 
-    const producerType =
-      policy.producerType === 'town_center' ||
-      policy.producerType === 'archery_range' ||
-      policy.producerType === 'stable' ||
-      policy.producerType === 'barracks'
-        ? policy.producerType
-        : null;
-
-    if (!producerType) {
+    if (!['town_center', 'archery_range', 'stable', 'barracks'].includes(policy.producerType)) {
       continue;
     }
 
-    const producerCount = producerByBuilding(state, producerType).length;
-    if (producerType !== 'town_center' && producerCount === 0) {
+    const producerCount = producerByBuilding(state, policy.producerType).length;
+    if (policy.producerType !== 'town_center' && producerCount === 0) {
       continue;
     }
 
     actions.push({
-      rank: rankForProducer(producerType),
+      rank: rankForProducer(policy.producerType),
       action: {
         type: 'train_once',
         unitId: policy.productId,
-        atBuildingId: producerType,
+        atBuildingId: policy.producerType,
         priority: policy.priority,
       },
     });
@@ -1374,6 +1450,24 @@ function processVillagerTransitions(state: EngineState, ruleset: Ruleset) {
   }
 }
 
+
+function refreshProducerBusyUntil(state: EngineState, producerKey: string) {
+  const producer = state.producers.get(producerKey);
+  if (!producer) {
+    return;
+  }
+
+  const nextTrainingEnd = state.trainingJobs
+    .filter((job) => job.producerKey === producerKey)
+    .reduce((maxEnd, job) => Math.max(maxEnd, job.endSec), state.timeSec);
+
+  const nextResearchEnd = state.researchJobs
+    .filter((job) => job.producerKey === producerKey)
+    .reduce((maxEnd, job) => Math.max(maxEnd, job.endSec), state.timeSec);
+
+  producer.busyUntil = Math.max(state.timeSec, nextTrainingEnd, nextResearchEnd);
+}
+
 function processFinishedTraining(state: EngineState, ruleset: Ruleset) {
   const finished = state.trainingJobs.filter((job) => job.endSec <= state.timeSec);
   state.trainingJobs = state.trainingJobs.filter((job) => job.endSec > state.timeSec);
@@ -1381,10 +1475,7 @@ function processFinishedTraining(state: EngineState, ruleset: Ruleset) {
   for (const job of finished) {
     const definition = ruleset.units[job.unitId];
     if (!definition) continue;
-    const producer = state.producers.get(job.producerKey);
-    if (producer) {
-      producer.busyUntil = state.timeSec;
-    }
+    refreshProducerBusyUntil(state, job.producerKey);
 
     state.units[job.unitId] = (state.units[job.unitId] ?? 0) + 1;
     state.population += definition.populationCost;
@@ -1392,7 +1483,13 @@ function processFinishedTraining(state: EngineState, ruleset: Ruleset) {
     addEventRef(state, job.completeRef);
 
     if (job.unitId === 'villager') {
-      const nextTask = job.assignedTasks && job.assignedTasks.length > 0 ? job.assignedTasks[0] : taskForNewVillager(state);
+      const defaultTask = taskForNewVillager(state);
+      const assignedTasks = job.assignedTasks && job.assignedTasks.length > 0 ? [...job.assignedTasks] : [defaultTask];
+      const walkTilesBeforeTasks =
+        job.walkTilesBeforeTasks && job.walkTilesBeforeTasks.length > 0
+          ? [...job.walkTilesBeforeTasks]
+          : [0];
+
       const villager: Villager = {
         id: state.villagers.length + 1,
         task: 'idle',
@@ -1402,17 +1499,17 @@ function processFinishedTraining(state: EngineState, ruleset: Ruleset) {
         returnTask: null,
         farmBuildUntil: null,
         farmFoodRemaining: 0,
-        orders: job.assignedTasks ? [...job.assignedTasks] : [nextTask],
+        orders: assignedTasks,
+        walkTilesBeforeTasks,
         orderIndex: 0,
       };
       state.villagers.push(villager);
       incrementTask(state, 'idle');
       setVillagerVisual(state, villager, 'idle', 'Spawned');
-      if (nextTask === 'farms') {
-        tryStartFarmForVillager(state, ruleset, villager);
-      } else {
-        setVillagerTaskImmediate(state, villager, nextTask, taskLabel(nextTask));
-      }
+
+      const firstTask = assignedTasks[0] ?? 'idle';
+      const firstWalkTiles = walkTilesBeforeTasks[0] ?? 0;
+      transitionVillagerToTask(state, ruleset, villager, firstTask, firstWalkTiles);
     }
   }
 
@@ -1424,10 +1521,7 @@ function processFinishedResearch(state: EngineState, ruleset: Ruleset, milestone
   state.researchJobs = state.researchJobs.filter((job) => job.endSec > state.timeSec);
 
   for (const job of finished) {
-    const producer = state.producers.get(job.producerKey);
-    if (producer) {
-      producer.busyUntil = state.timeSec;
-    }
+    refreshProducerBusyUntil(state, job.producerKey);
     state.researchedTechs.add(job.techId);
     addEventRef(state, job.techId);
     addEventRef(state, job.completeRef);
@@ -1462,13 +1556,24 @@ function processFinishedBuilds(state: EngineState, ruleset: Ruleset) {
         decrementTask(state, 'build');
       }
       const returnTask = job.returnTasks[builderId] ?? 'idle';
-      incrementTask(state, returnTask);
-      villager.task = returnTask;
       villager.pendingBuildJobId = null;
       villager.pendingTask = null;
       villager.walkUntil = null;
       villager.returnTask = null;
-      setVillagerVisual(state, villager, returnTask === 'idle' ? 'idle' : 'gathering', taskLabel(returnTask));
+
+      if (job.walkAfterCompleteTiles > 0) {
+        incrementTask(state, 'walk');
+        villager.task = 'walk';
+        villager.pendingTask = returnTask;
+        villager.walkUntil = state.timeSec + tilesToSeconds(job.walkAfterCompleteTiles);
+        setVillagerVisual(state, villager, 'walking', `Walk after ${job.label.toLowerCase()}`);
+      } else if (returnTask === 'farms') {
+        tryStartFarmForVillager(state, ruleset, villager);
+      } else {
+        incrementTask(state, returnTask);
+        villager.task = returnTask;
+        setVillagerVisual(state, villager, returnTask === 'idle' ? 'idle' : 'gathering', taskLabel(returnTask));
+      }
     }
   }
 

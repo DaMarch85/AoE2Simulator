@@ -3,12 +3,18 @@
 import type {
   Age,
   BuildOrder,
-  BuildOrderTaskStep,
+  BuildOrderPlanStep,
+  BuildOrderQueueItem,
+  BuildOrderQueueItemCategory,
   BuildQueueTrigger,
   Ruleset,
   ScenarioDraft,
 } from '@/lib/sim/schema';
-import { createDefaultBuildOrder } from '@/lib/sim/schema';
+import {
+  createDefaultBuildOrder,
+  createDefaultQueueVillagerRow,
+  defaultVillagerPlanSteps,
+} from '@/lib/sim/schema';
 
 type StepSlot = 0 | 1 | 2 | 3 | 4;
 
@@ -21,40 +27,51 @@ const priorityColumns = [
   { key: 'save', label: 'Save' },
 ] as const;
 
-const stepOptions: Array<{ value: BuildOrderTaskStep; label: string }> = [
-  { value: 'sheep', label: 'Sheep' },
-  { value: 'hunt', label: 'Hunt' },
-  { value: 'berries', label: 'Berries' },
-  { value: 'deer', label: 'Deer' },
-  { value: 'farms', label: 'Farm' },
-  { value: 'wood', label: 'Wood' },
-  { value: 'gold', label: 'Gold' },
-  { value: 'stone', label: 'Stone' },
-  { value: 'idle', label: 'Idle' },
+const queueCategoryOptions: Array<{ value: BuildOrderQueueItemCategory; label: string }> = [
+  { value: 'villager', label: 'Villager' },
+  { value: 'military', label: 'Military' },
+  { value: 'eco_technology', label: 'Eco technology' },
+  { value: 'military_technology', label: 'Military technology' },
+  { value: 'age_up', label: 'Age up' },
 ];
 
-const tcItemOptions = [
-  { value: 'villager', label: 'Villager' },
-  { value: 'loom', label: 'Loom' },
-  { value: 'feudal_age', label: 'Feudal Age' },
-  { value: 'castle_age', label: 'Castle Age' },
-  { value: 'imperial_age', label: 'Imperial Age' },
-] as const;
-
-const militaryProducerOptions = [
-  { value: 'archery_range', label: 'Archery Range' },
-  { value: 'barracks', label: 'Barracks' },
-  { value: 'stable', label: 'Stable' },
+const planStepOptions = [
+  { value: 'task:sheep', label: 'Sheep' },
+  { value: 'task:hunt', label: 'Hunt' },
+  { value: 'task:berries', label: 'Berries' },
+  { value: 'task:deer', label: 'Deer' },
+  { value: 'task:farms', label: 'Farm' },
+  { value: 'task:wood', label: 'Wood' },
+  { value: 'task:gold', label: 'Gold' },
+  { value: 'task:stone', label: 'Stone' },
+  { value: 'walking', label: 'Walking' },
+  { value: 'task:idle', label: 'Idle' },
 ] as const;
 
 const buildingTriggerOptions: Array<{ value: BuildQueueTrigger; label: string }> = [
   { value: 'on_start', label: 'On start' },
-  { value: 'prior_complete', label: 'Prior complete' },
-  { value: 'feudal_clicked', label: 'Feudal clicked' },
-  { value: 'feudal_reached', label: 'Feudal reached' },
-  { value: 'castle_clicked', label: 'Castle clicked' },
-  { value: 'castle_reached', label: 'Castle reached' },
+  { value: 'prior_buildings_complete', label: 'Prior buildings complete' },
+  { value: 'feudal_clicked', label: 'Feudal age clicked' },
+  { value: 'feudal_reached', label: 'Feudal age reached' },
+  { value: 'castle_clicked', label: 'Castle age clicked' },
+  { value: 'castle_reached', label: 'Castle age reached' },
 ];
+
+const ecoTechIds = new Set([
+  'loom',
+  'double_bit_axe',
+  'horse_collar',
+  'wheelbarrow',
+  'hand_cart',
+  'gold_mining',
+  'gold_shaft_mining',
+  'stone_mining',
+  'stone_shaft_mining',
+  'bow_saw',
+  'two_man_saw',
+  'heavy_plow',
+  'crop_rotation',
+]);
 
 function ageLabel(age: Age) {
   return `${age[0]?.toUpperCase() ?? ''}${age.slice(1)}`;
@@ -71,16 +88,8 @@ function rowId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function ensureBuildOrder(draft: ScenarioDraft) {
-  return draft.buildOrder ?? createDefaultBuildOrder();
-}
-
-function normalizeSteps(steps: Array<BuildOrderTaskStep | ''>) {
-  return steps.filter((step): step is BuildOrderTaskStep => Boolean(step));
-}
-
-function stepValue(steps: BuildOrderTaskStep[], index: StepSlot) {
-  return steps[index] ?? '';
+function ensureBuildOrder(draft: ScenarioDraft, ruleset: Ruleset) {
+  return draft.buildOrder ?? createDefaultBuildOrder(ruleset.startingVillagers);
 }
 
 function sectionHeader(title: string, subtitle: string) {
@@ -92,6 +101,143 @@ function sectionHeader(title: string, subtitle: string) {
   );
 }
 
+function countVillagerRows(queue: BuildOrder['queue']) {
+  return queue.filter((row) => row.category === 'villager').length;
+}
+
+function villagerNumberAtRow(queue: BuildOrder['queue'], rowIndex: number) {
+  let villagerNumber = 0;
+  for (let index = 0; index <= rowIndex; index += 1) {
+    if (queue[index]?.category === 'villager') {
+      villagerNumber += 1;
+    }
+  }
+  return Math.max(1, villagerNumber);
+}
+
+function stepAt(orderSteps: BuildOrderPlanStep[], index: StepSlot) {
+  return orderSteps[index];
+}
+
+function planStepValue(step: BuildOrderPlanStep | undefined) {
+  if (!step) {
+    return '';
+  }
+  return step.kind === 'walking' ? 'walking' : `task:${step.task}`;
+}
+
+function updatePlanStepAtIndex(orderSteps: BuildOrderPlanStep[], index: StepSlot, nextValue: string) {
+  const slots = [...orderSteps];
+  if (!nextValue) {
+    slots[index] = undefined as unknown as BuildOrderPlanStep;
+    return slots.filter(Boolean) as BuildOrderPlanStep[];
+  }
+
+  if (nextValue === 'walking') {
+    slots[index] = {
+      kind: 'walking',
+      tiles: stepAt(orderSteps, index)?.kind === 'walking' ? stepAt(orderSteps, index)?.tiles ?? 0 : 4,
+    };
+    return slots.filter(Boolean) as BuildOrderPlanStep[];
+  }
+
+  const task = nextValue.replace(/^task:/, '') as NonNullable<BuildOrderPlanStep['task']>;
+  slots[index] = {
+    kind: 'task',
+    task,
+    tiles: 0,
+  };
+  return slots.filter(Boolean) as BuildOrderPlanStep[];
+}
+
+function updateWalkingTiles(orderSteps: BuildOrderPlanStep[], index: StepSlot, tiles: number) {
+  const slots = [...orderSteps];
+  const current = stepAt(orderSteps, index);
+  if (current?.kind !== 'walking') {
+    return orderSteps;
+  }
+  slots[index] = { ...current, tiles: Math.max(0, tiles || 0) };
+  return slots.filter(Boolean) as BuildOrderPlanStep[];
+}
+
+function defaultItemIdForCategory(category: BuildOrderQueueItemCategory, ruleset: Ruleset) {
+  if (category === 'villager') {
+    return 'villager';
+  }
+
+  if (category === 'military') {
+    return (
+      Object.values(ruleset.units).find((unit) => unit.id !== 'villager')?.id ??
+      'archer'
+    );
+  }
+
+  if (category === 'eco_technology') {
+    return (
+      Object.values(ruleset.techs).find((tech) => tech.id !== 'feudal_age' && tech.id !== 'castle_age' && tech.id !== 'imperial_age' && ecoTechIds.has(tech.id))?.id ??
+      'loom'
+    );
+  }
+
+  if (category === 'military_technology') {
+    return (
+      Object.values(ruleset.techs).find((tech) => tech.id !== 'feudal_age' && tech.id !== 'castle_age' && tech.id !== 'imperial_age' && !ecoTechIds.has(tech.id))?.id ??
+      'fletching'
+    );
+  }
+
+  return 'feudal_age';
+}
+
+function itemOptionsForCategory(category: BuildOrderQueueItemCategory, ruleset: Ruleset) {
+  if (category === 'villager') {
+    return [{ value: 'villager', label: 'Villager' }];
+  }
+
+  if (category === 'military') {
+    return Object.values(ruleset.units)
+      .filter((unit) => unit.id !== 'villager')
+      .map((unit) => ({ value: unit.id, label: unit.name }));
+  }
+
+  if (category === 'eco_technology') {
+    return Object.values(ruleset.techs)
+      .filter((tech) => tech.id !== 'feudal_age' && tech.id !== 'castle_age' && tech.id !== 'imperial_age' && ecoTechIds.has(tech.id))
+      .map((tech) => ({ value: tech.id, label: tech.name }));
+  }
+
+  if (category === 'military_technology') {
+    return Object.values(ruleset.techs)
+      .filter((tech) => tech.id !== 'feudal_age' && tech.id !== 'castle_age' && tech.id !== 'imperial_age' && !ecoTechIds.has(tech.id))
+      .map((tech) => ({ value: tech.id, label: tech.name }));
+  }
+
+  return [
+    { value: 'feudal_age', label: 'Feudal Age' },
+    { value: 'castle_age', label: 'Castle Age' },
+    { value: 'imperial_age', label: 'Imperial Age' },
+  ];
+}
+
+function withQueueRowUpdated(
+  buildOrder: BuildOrder,
+  rowIndex: number,
+  nextRow: BuildOrderQueueItem,
+) {
+  return {
+    ...buildOrder,
+    queue: buildOrder.queue.map((row, index) => (index === rowIndex ? nextRow : row)),
+  };
+}
+
+function copyQueueRow(row: BuildOrderQueueItem): BuildOrderQueueItem {
+  return {
+    ...row,
+    id: rowId(`queue_copy_${row.category}`),
+    orderSteps: row.orderSteps.map((step) => ({ ...step })),
+  };
+}
+
 export function BuildOrderPanel({
   draft,
   ruleset,
@@ -101,19 +247,11 @@ export function BuildOrderPanel({
   ruleset: Ruleset;
   onDraftChange: (draft: ScenarioDraft) => void;
 }) {
-  const buildOrder = ensureBuildOrder(draft);
+  const buildOrder = ensureBuildOrder(draft, ruleset);
 
   const editableBuildings = Object.values(ruleset.buildings)
     .filter((building) => building.id !== 'town_center')
     .map((building) => ({ value: building.id, label: building.name }));
-
-  const editableUnits = Object.values(ruleset.units)
-    .filter((unit) => unit.id !== 'villager')
-    .map((unit) => ({ value: unit.id, label: unit.name }));
-
-  const editableTechs = Object.values(ruleset.techs)
-    .filter((tech) => tech.id !== 'feudal_age' && tech.id !== 'castle_age' && tech.id !== 'imperial_age' && tech.id !== 'loom')
-    .map((tech) => ({ value: tech.id, label: tech.name, buildingId: tech.researchedAt }));
 
   const withBuildOrder = (nextBuildOrder: BuildOrder) => {
     onDraftChange({
@@ -122,13 +260,15 @@ export function BuildOrderPanel({
     });
   };
 
+  const villagerSelectorMax = Math.max(40, countVillagerRows(buildOrder.queue) + 10);
+
   return (
     <section className="panel p-4">
       <div className="mb-4">
         <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Build order editor</p>
-        <h2 className="mt-2 text-xl font-semibold text-slate-50">Author your own queue</h2>
+        <h2 className="mt-2 text-xl font-semibold text-slate-50">Single click-order queue</h2>
         <p className="mt-2 text-sm text-slate-300">
-          Queue starting villagers, Town Center items, military units, techs, and buildings. The dashboard stays empty until you click Run simulation.
+          Set the order you would click villagers, military, techs, and age-ups in a real game. Buildings stay in their own table because they also need builders and trigger rules.
         </p>
       </div>
 
@@ -219,7 +359,7 @@ export function BuildOrderPanel({
               </label>
             </div>
 
-            <div className="overflow-auto border border-slate-800/70 bg-slate-950/45">
+            <div className="overflow-x-auto border border-slate-800/70 bg-slate-950/45">
               <table className="min-w-full border-collapse text-sm">
                 <thead>
                   <tr className="text-slate-400">
@@ -273,218 +413,181 @@ export function BuildOrderPanel({
         </section>
 
         <section className="border border-slate-700/70 bg-slate-950/45 p-3">
-          {sectionHeader('Starting villagers', 'These are the villagers that exist at game start. Give each one an order chain.')}
-          <div className="overflow-auto">
+          {sectionHeader(
+            'Main queue',
+            'One ordered list for villagers, military, eco tech, military tech, and age-ups. Each row can fire once the prior row has been clicked.',
+          )}
+          <div className="overflow-x-auto">
             <table className="min-w-full border-collapse text-sm">
               <thead>
                 <tr className="text-slate-400">
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Villager</th>
-                  {[0, 1, 2, 3, 4].map((index) => (
-                    <th key={index} className="border border-slate-800/70 px-2 py-2 font-medium">
-                      {index === 0 ? 'First' : `Then ${index}`}
+                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">#</th>
+                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Type</th>
+                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Specific</th>
+                  {(['First', 'Then', 'Then', 'Then', 'Then'] as const).map((label, index) => (
+                    <th key={`${label}-${index}`} className="border border-slate-800/70 px-2 py-2 text-left font-medium">
+                      {label}
                     </th>
                   ))}
-                  <th className="border border-slate-800/70 px-2 py-2" />
+                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {buildOrder.startingVillagers.map((row, rowIndex) => (
-                  <tr key={row.id}>
-                    <td className="border border-slate-800/70 p-1">
-                      <input
-                        type="number"
-                        min={1}
-                        className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                        value={row.villagerId}
-                        onChange={(event) =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            startingVillagers: buildOrder.startingVillagers.map((item, index) =>
-                              index === rowIndex ? { ...item, villagerId: Number(event.target.value) || row.villagerId } : item,
-                            ),
-                          })
-                        }
-                      />
-                    </td>
-                    {[0, 1, 2, 3, 4].map((slot) => (
-                      <td key={`${row.id}-${slot}`} className="border border-slate-800/70 p-1">
+                {buildOrder.queue.map((row, rowIndex) => {
+                  const villagerNumber = villagerNumberAtRow(buildOrder.queue, rowIndex);
+                  const specificOptions = itemOptionsForCategory(row.category, ruleset);
+                  return (
+                    <tr key={row.id}>
+                      <td className="border border-slate-800/70 px-2 py-2 font-medium text-slate-200">{rowIndex + 1}</td>
+                      <td className="border border-slate-800/70 p-1">
                         <select
-                          className="w-full min-w-28 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                          value={stepValue(row.steps, slot as StepSlot)}
+                          className="w-full min-w-32 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                          value={row.category}
                           onChange={(event) => {
-                            const nextSteps = [...row.steps] as Array<BuildOrderTaskStep | ''>;
-                            nextSteps[slot] = event.target.value as BuildOrderTaskStep | '';
-                            withBuildOrder({
-                              ...buildOrder,
-                              startingVillagers: buildOrder.startingVillagers.map((item, index) =>
-                                index === rowIndex ? { ...item, steps: normalizeSteps(nextSteps) } : item,
-                              ),
-                            });
+                            const nextCategory = event.target.value as BuildOrderQueueItemCategory;
+                            const nextQueue = buildOrder.queue.map((item, index) =>
+                              index === rowIndex
+                                ? {
+                                    ...item,
+                                    category: nextCategory,
+                                    itemId: defaultItemIdForCategory(nextCategory, ruleset),
+                                    orderSteps:
+                                      nextCategory === 'villager'
+                                        ? defaultVillagerPlanSteps(villagerNumberAtRow(
+                                            buildOrder.queue.map((candidate, candidateIndex) =>
+                                              candidateIndex === rowIndex ? { ...candidate, category: nextCategory } : candidate,
+                                            ),
+                                            rowIndex,
+                                          ))
+                                        : [],
+                                  }
+                                : item,
+                            );
+                            withBuildOrder({ ...buildOrder, queue: nextQueue });
                           }}
                         >
-                          <option value="">—</option>
-                          {stepOptions.map((option) => (
+                          {queueCategoryOptions.map((option) => (
                             <option key={option.value} value={option.value}>
                               {option.label}
                             </option>
                           ))}
                         </select>
                       </td>
-                    ))}
-                    <td className="border border-slate-800/70 p-1 text-right">
-                      <button
-                        type="button"
-                        className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
-                        onClick={() =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            startingVillagers: buildOrder.startingVillagers.filter((item) => item.id !== row.id),
-                          })
-                        }
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-3 flex justify-end">
-            <button
-              type="button"
-              className="border border-slate-700/70 bg-slate-900/60 px-3 py-2 text-sm text-slate-100"
-              onClick={() =>
-                withBuildOrder({
-                  ...buildOrder,
-                  startingVillagers: [
-                    ...buildOrder.startingVillagers,
-                    { id: rowId('start_villager'), villagerId: buildOrder.startingVillagers.length + 1, steps: [] },
-                  ],
-                })
-              }
-            >
-              Add villager row
-            </button>
-          </div>
-        </section>
-
-        <section className="border border-slate-700/70 bg-slate-950/45 p-3">
-          {sectionHeader('Town Center queue', 'Queue villagers, Loom, and age-ups in exact order. Villager rows can include post-spawn orders.')}
-          <div className="overflow-auto">
-            <table className="min-w-full border-collapse text-sm">
-              <thead>
-                <tr className="text-slate-400">
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Item</th>
-                  <th className="border border-slate-800/70 px-2 py-2 font-medium">Qty</th>
-                  {[0, 1, 2, 3, 4].map((index) => (
-                    <th key={index} className="border border-slate-800/70 px-2 py-2 font-medium">
-                      {index === 0 ? 'Orders' : `Then ${index}`}
-                    </th>
-                  ))}
-                  <th className="border border-slate-800/70 px-2 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {buildOrder.townCenterQueue.map((row, rowIndex) => (
-                  <tr key={row.id}>
-                    <td className="border border-slate-800/70 p-1">
-                      <select
-                        className="w-full min-w-36 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                        value={row.itemType}
-                        onChange={(event) =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            townCenterQueue: buildOrder.townCenterQueue.map((item, index) =>
-                              index === rowIndex
-                                ? {
-                                    ...item,
-                                    itemType: event.target.value as typeof row.itemType,
-                                    quantity: event.target.value === 'villager' ? item.quantity : 1,
-                                    villagerSteps: event.target.value === 'villager' ? item.villagerSteps : [],
-                                  }
-                                : item,
-                            ),
-                          })
-                        }
-                      >
-                        {tcItemOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="border border-slate-800/70 p-1">
-                      <input
-                        type="number"
-                        min={1}
-                        className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm disabled:opacity-50"
-                        value={row.itemType === 'villager' ? row.quantity : 1}
-                        disabled={row.itemType !== 'villager'}
-                        onChange={(event) =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            townCenterQueue: buildOrder.townCenterQueue.map((item, index) =>
-                              index === rowIndex
-                                ? {
-                                    ...item,
-                                    quantity: row.itemType === 'villager' ? Math.max(1, Number(event.target.value) || 1) : 1,
-                                  }
-                                : item,
-                            ),
-                          })
-                        }
-                      />
-                    </td>
-                    {[0, 1, 2, 3, 4].map((slot) => (
-                      <td key={`${row.id}-${slot}`} className="border border-slate-800/70 p-1">
-                        {row.itemType === 'villager' ? (
+                      <td className="border border-slate-800/70 p-1">
+                        {row.category === 'villager' ? (
+                          <div className="min-w-28 border border-slate-800/70 bg-slate-950/40 px-2 py-2 text-sm text-slate-200">
+                            Villager {villagerNumber}
+                          </div>
+                        ) : (
                           <select
-                            className="w-full min-w-28 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                            value={stepValue(row.villagerSteps, slot as StepSlot)}
-                            onChange={(event) => {
-                              const nextSteps = [...row.villagerSteps] as Array<BuildOrderTaskStep | ''>;
-                              nextSteps[slot] = event.target.value as BuildOrderTaskStep | '';
-                              withBuildOrder({
-                                ...buildOrder,
-                                townCenterQueue: buildOrder.townCenterQueue.map((item, index) =>
-                                  index === rowIndex ? { ...item, villagerSteps: normalizeSteps(nextSteps) } : item,
-                                ),
-                              });
-                            }}
+                            className="w-full min-w-36 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                            value={row.itemId}
+                            onChange={(event) =>
+                              withBuildOrder(
+                                withQueueRowUpdated(buildOrder, rowIndex, {
+                                  ...row,
+                                  itemId: event.target.value,
+                                }),
+                              )
+                            }
                           >
-                            <option value="">—</option>
-                            {stepOptions.map((option) => (
+                            {specificOptions.map((option) => (
                               <option key={option.value} value={option.value}>
                                 {option.label}
                               </option>
                             ))}
                           </select>
-                        ) : (
-                          <div className="h-10 border border-slate-800/70 bg-slate-950/35" />
                         )}
                       </td>
-                    ))}
-                    <td className="border border-slate-800/70 p-1 text-right">
-                      <button
-                        type="button"
-                        className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
-                        onClick={() =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            townCenterQueue: buildOrder.townCenterQueue.filter((item) => item.id !== row.id),
-                          })
-                        }
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                      {[0, 1, 2, 3, 4].map((slot) => (
+                        <td key={`${row.id}-${slot}`} className="border border-slate-800/70 p-1 align-top">
+                          {row.category === 'villager' ? (
+                            <div className="min-w-[7rem] space-y-1">
+                              <select
+                                className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                                value={planStepValue(stepAt(row.orderSteps, slot as StepSlot))}
+                                onChange={(event) =>
+                                  withBuildOrder(
+                                    withQueueRowUpdated(buildOrder, rowIndex, {
+                                      ...row,
+                                      orderSteps: updatePlanStepAtIndex(row.orderSteps, slot as StepSlot, event.target.value),
+                                    }),
+                                  )
+                                }
+                              >
+                                <option value="">—</option>
+                                {planStepOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                              {stepAt(row.orderSteps, slot as StepSlot)?.kind === 'walking' ? (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Tiles</span>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
+                                    value={stepAt(row.orderSteps, slot as StepSlot)?.tiles ?? 0}
+                                    onChange={(event) =>
+                                      withBuildOrder(
+                                        withQueueRowUpdated(buildOrder, rowIndex, {
+                                          ...row,
+                                          orderSteps: updateWalkingTiles(
+                                            row.orderSteps,
+                                            slot as StepSlot,
+                                            Number(event.target.value) || 0,
+                                          ),
+                                        }),
+                                      )
+                                    }
+                                  />
+                                </div>
+                              ) : (
+                                <div className="h-7" />
+                              )}
+                            </div>
+                          ) : (
+                            <div className="h-[4.2rem] border border-slate-900/40 bg-slate-950/25" />
+                          )}
+                        </td>
+                      ))}
+                      <td className="border border-slate-800/70 p-1">
+                        <div className="flex min-w-32 gap-2">
+                          <button
+                            type="button"
+                            className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                            onClick={() =>
+                              withBuildOrder({
+                                ...buildOrder,
+                                queue: [...buildOrder.queue, copyQueueRow(row)],
+                              })
+                            }
+                          >
+                            Copy
+                          </button>
+                          <button
+                            type="button"
+                            className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                            onClick={() =>
+                              withBuildOrder({
+                                ...buildOrder,
+                                queue: buildOrder.queue.filter((item) => item.id !== row.id),
+                              })
+                            }
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+
           <div className="mt-3 flex justify-end">
             <button
               type="button"
@@ -492,239 +595,31 @@ export function BuildOrderPanel({
               onClick={() =>
                 withBuildOrder({
                   ...buildOrder,
-                  townCenterQueue: [
-                    ...buildOrder.townCenterQueue,
-                    { id: rowId('tc'), itemType: 'villager', quantity: 1, villagerSteps: [] },
-                  ],
+                  queue: [...buildOrder.queue, createDefaultQueueVillagerRow(countVillagerRows(buildOrder.queue) + 1)],
                 })
               }
             >
-              Add TC item
+              Add queue order
             </button>
           </div>
         </section>
 
         <section className="border border-slate-700/70 bg-slate-950/45 p-3">
-          {sectionHeader('Military queue', 'Queue units by producer. Each producer runs its own ordered queue.')}
-          <div className="overflow-auto">
-            <table className="min-w-full border-collapse text-sm">
-              <thead>
-                <tr className="text-slate-400">
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Producer</th>
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Unit</th>
-                  <th className="border border-slate-800/70 px-2 py-2 font-medium">Qty</th>
-                  <th className="border border-slate-800/70 px-2 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {buildOrder.militaryQueue.map((row, rowIndex) => (
-                  <tr key={row.id}>
-                    <td className="border border-slate-800/70 p-1">
-                      <select
-                        className="w-full min-w-32 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                        value={row.producerType}
-                        onChange={(event) =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            militaryQueue: buildOrder.militaryQueue.map((item, index) =>
-                              index === rowIndex ? { ...item, producerType: event.target.value as typeof row.producerType } : item,
-                            ),
-                          })
-                        }
-                      >
-                        {militaryProducerOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="border border-slate-800/70 p-1">
-                      <select
-                        className="w-full min-w-32 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                        value={row.unitId}
-                        onChange={(event) =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            militaryQueue: buildOrder.militaryQueue.map((item, index) =>
-                              index === rowIndex ? { ...item, unitId: event.target.value } : item,
-                            ),
-                          })
-                        }
-                      >
-                        {editableUnits.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="border border-slate-800/70 p-1">
-                      <input
-                        type="number"
-                        min={1}
-                        className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                        value={row.quantity}
-                        onChange={(event) =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            militaryQueue: buildOrder.militaryQueue.map((item, index) =>
-                              index === rowIndex ? { ...item, quantity: Math.max(1, Number(event.target.value) || 1) } : item,
-                            ),
-                          })
-                        }
-                      />
-                    </td>
-                    <td className="border border-slate-800/70 p-1 text-right">
-                      <button
-                        type="button"
-                        className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
-                        onClick={() =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            militaryQueue: buildOrder.militaryQueue.filter((item) => item.id !== row.id),
-                          })
-                        }
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-3 flex justify-end">
-            <button
-              type="button"
-              className="border border-slate-700/70 bg-slate-900/60 px-3 py-2 text-sm text-slate-100"
-              onClick={() =>
-                withBuildOrder({
-                  ...buildOrder,
-                  militaryQueue: [
-                    ...buildOrder.militaryQueue,
-                    {
-                      id: rowId('military'),
-                      producerType: 'archery_range',
-                      unitId: editableUnits[0]?.value ?? 'archer',
-                      quantity: 1,
-                    },
-                  ],
-                })
-              }
-            >
-              Add military row
-            </button>
-          </div>
-        </section>
-
-        <section className="border border-slate-700/70 bg-slate-950/45 p-3">
-          {sectionHeader('Tech queue', 'Queue technologies by researching building. Use the Town Center queue for Loom and age-ups.')}
-          <div className="overflow-auto">
+          {sectionHeader(
+            'Buildings',
+            'Separate building triggers, one or two builders, and explicit walking tiles to and from the build.',
+          )}
+          <div className="overflow-x-auto">
             <table className="min-w-full border-collapse text-sm">
               <thead>
                 <tr className="text-slate-400">
                   <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Building</th>
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Technology</th>
-                  <th className="border border-slate-800/70 px-2 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {buildOrder.techQueue.map((row, rowIndex) => (
-                  <tr key={row.id}>
-                    <td className="border border-slate-800/70 p-1">
-                      <select
-                        className="w-full min-w-32 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                        value={row.buildingId}
-                        onChange={(event) =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            techQueue: buildOrder.techQueue.map((item, index) =>
-                              index === rowIndex ? { ...item, buildingId: event.target.value } : item,
-                            ),
-                          })
-                        }
-                      >
-                        {[...new Map(editableTechs.map((item) => [item.buildingId, item.buildingId])).keys()].map((buildingId) => (
-                          <option key={buildingId} value={buildingId}>
-                            {buildingId.replace(/_/g, ' ')}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="border border-slate-800/70 p-1">
-                      <select
-                        className="w-full min-w-40 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                        value={row.techId}
-                        onChange={(event) =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            techQueue: buildOrder.techQueue.map((item, index) =>
-                              index === rowIndex ? { ...item, techId: event.target.value } : item,
-                            ),
-                          })
-                        }
-                      >
-                        {editableTechs
-                          .filter((tech) => tech.buildingId === row.buildingId)
-                          .map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                      </select>
-                    </td>
-                    <td className="border border-slate-800/70 p-1 text-right">
-                      <button
-                        type="button"
-                        className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
-                        onClick={() =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            techQueue: buildOrder.techQueue.filter((item) => item.id !== row.id),
-                          })
-                        }
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-3 flex justify-end">
-            <button
-              type="button"
-              className="border border-slate-700/70 bg-slate-900/60 px-3 py-2 text-sm text-slate-100"
-              onClick={() => {
-                const firstTech = editableTechs[0];
-                if (!firstTech) return;
-                withBuildOrder({
-                  ...buildOrder,
-                  techQueue: [
-                    ...buildOrder.techQueue,
-                    { id: rowId('tech'), buildingId: firstTech.buildingId, techId: firstTech.value },
-                  ],
-                });
-              }}
-            >
-              Add tech row
-            </button>
-          </div>
-        </section>
-
-        <section className="border border-slate-700/70 bg-slate-950/45 p-3">
-          {sectionHeader('Buildings', 'Choose what to build, what condition starts it, and which villager builds it.')}
-          <div className="overflow-auto">
-            <table className="min-w-full border-collapse text-sm">
-              <thead>
-                <tr className="text-slate-400">
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Building</th>
-                  <th className="border border-slate-800/70 px-2 py-2 font-medium">Qty</th>
                   <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Trigger</th>
-                  <th className="border border-slate-800/70 px-2 py-2 font-medium">Builder vil</th>
-                  <th className="border border-slate-800/70 px-2 py-2" />
+                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Villager 1</th>
+                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Villager 2</th>
+                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Tiles to build</th>
+                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Tiles after build</th>
+                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -732,7 +627,7 @@ export function BuildOrderPanel({
                   <tr key={row.id}>
                     <td className="border border-slate-800/70 p-1">
                       <select
-                        className="w-full min-w-40 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        className="w-full min-w-32 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
                         value={row.buildingId}
                         onChange={(event) =>
                           withBuildOrder({
@@ -751,24 +646,8 @@ export function BuildOrderPanel({
                       </select>
                     </td>
                     <td className="border border-slate-800/70 p-1">
-                      <input
-                        type="number"
-                        min={1}
-                        className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                        value={row.quantity}
-                        onChange={(event) =>
-                          withBuildOrder({
-                            ...buildOrder,
-                            buildingQueue: buildOrder.buildingQueue.map((item, index) =>
-                              index === rowIndex ? { ...item, quantity: Math.max(1, Number(event.target.value) || 1) } : item,
-                            ),
-                          })
-                        }
-                      />
-                    </td>
-                    <td className="border border-slate-800/70 p-1">
                       <select
-                        className="w-full min-w-36 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        className="w-full min-w-44 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
                         value={row.trigger}
                         onChange={(event) =>
                           withBuildOrder({
@@ -790,6 +669,7 @@ export function BuildOrderPanel({
                       <input
                         type="number"
                         min={1}
+                        max={villagerSelectorMax}
                         className="w-24 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
                         value={row.builderVillagerId ?? ''}
                         onChange={(event) =>
@@ -799,7 +679,7 @@ export function BuildOrderPanel({
                               index === rowIndex
                                 ? {
                                     ...item,
-                                    builderVillagerId: event.target.value === '' ? undefined : Math.max(1, Number(event.target.value) || 1),
+                                    builderVillagerId: event.target.value ? Math.max(1, Number(event.target.value)) : undefined,
                                   }
                                 : item,
                             ),
@@ -807,25 +687,110 @@ export function BuildOrderPanel({
                         }
                       />
                     </td>
-                    <td className="border border-slate-800/70 p-1 text-right">
-                      <button
-                        type="button"
-                        className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
-                        onClick={() =>
+                    <td className="border border-slate-800/70 p-1">
+                      <input
+                        type="number"
+                        min={1}
+                        max={villagerSelectorMax}
+                        className="w-24 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        value={row.secondaryBuilderVillagerId ?? ''}
+                        onChange={(event) =>
                           withBuildOrder({
                             ...buildOrder,
-                            buildingQueue: buildOrder.buildingQueue.filter((item) => item.id !== row.id),
+                            buildingQueue: buildOrder.buildingQueue.map((item, index) =>
+                              index === rowIndex
+                                ? {
+                                    ...item,
+                                    secondaryBuilderVillagerId: event.target.value ? Math.max(1, Number(event.target.value)) : undefined,
+                                  }
+                                : item,
+                            ),
                           })
                         }
-                      >
-                        Remove
-                      </button>
+                      />
+                    </td>
+                    <td className="border border-slate-800/70 p-1">
+                      <input
+                        type="number"
+                        min={0}
+                        className="w-24 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        value={row.walkToStartTiles}
+                        onChange={(event) =>
+                          withBuildOrder({
+                            ...buildOrder,
+                            buildingQueue: buildOrder.buildingQueue.map((item, index) =>
+                              index === rowIndex
+                                ? {
+                                    ...item,
+                                    walkToStartTiles: Math.max(0, Number(event.target.value) || 0),
+                                  }
+                                : item,
+                            ),
+                          })
+                        }
+                      />
+                    </td>
+                    <td className="border border-slate-800/70 p-1">
+                      <input
+                        type="number"
+                        min={0}
+                        className="w-24 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        value={row.walkAfterCompleteTiles}
+                        onChange={(event) =>
+                          withBuildOrder({
+                            ...buildOrder,
+                            buildingQueue: buildOrder.buildingQueue.map((item, index) =>
+                              index === rowIndex
+                                ? {
+                                    ...item,
+                                    walkAfterCompleteTiles: Math.max(0, Number(event.target.value) || 0),
+                                  }
+                                : item,
+                            ),
+                          })
+                        }
+                      />
+                    </td>
+                    <td className="border border-slate-800/70 p-1">
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                          onClick={() =>
+                            withBuildOrder({
+                              ...buildOrder,
+                              buildingQueue: [
+                                ...buildOrder.buildingQueue,
+                                {
+                                  ...row,
+                                  id: rowId('building_copy'),
+                                },
+                              ],
+                            })
+                          }
+                        >
+                          Copy
+                        </button>
+                        <button
+                          type="button"
+                          className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                          onClick={() =>
+                            withBuildOrder({
+                              ...buildOrder,
+                              buildingQueue: buildOrder.buildingQueue.filter((item) => item.id !== row.id),
+                            })
+                          }
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+
           <div className="mt-3 flex justify-end">
             <button
               type="button"
@@ -838,14 +803,17 @@ export function BuildOrderPanel({
                     {
                       id: rowId('building'),
                       buildingId: editableBuildings[0]?.value ?? 'house',
-                      quantity: 1,
-                      trigger: 'prior_complete',
+                      trigger: 'prior_buildings_complete',
+                      builderVillagerId: 1,
+                      secondaryBuilderVillagerId: undefined,
+                      walkToStartTiles: 0,
+                      walkAfterCompleteTiles: 0,
                     },
                   ],
                 })
               }
             >
-              Add building row
+              Add building
             </button>
           </div>
         </section>

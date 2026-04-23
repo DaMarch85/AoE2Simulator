@@ -9,14 +9,7 @@ export const exampleScenarioDraft: ScenarioDraft = ScenarioDraftSchema.parse(
     civId: 'generic',
     rulesetVersion: 'current',
     baseOpeningId: undefined,
-    buildOrder: {
-      ...createDefaultBuildOrder(3),
-      startingVillagers: [
-        { id: 'start_vil_1', villagerId: 1, steps: ['sheep', 'hunt', 'wood'] },
-        { id: 'start_vil_2', villagerId: 2, steps: ['sheep', 'hunt', 'wood'] },
-        { id: 'start_vil_3', villagerId: 3, steps: ['sheep', 'hunt', 'wood'] },
-      ],
-    },
+    buildOrder: createDefaultBuildOrder(3),
     userEvents: [],
     policies: [],
   }),

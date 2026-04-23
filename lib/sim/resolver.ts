@@ -62,7 +62,7 @@ export function resolveScenario(draftInput: ScenarioDraft, ruleset: Ruleset): Re
     });
   }
 
-  const compiledBuildOrder = compileBuildOrderEvents(draft);
+  const compiledBuildOrder = compileBuildOrderEvents(draft, ruleset);
   issues.push(...compiledBuildOrder.issues);
   for (const event of compiledBuildOrder.events) {
     addResolvedEvent(resolvedEvents, { ...event, source: 'user' });

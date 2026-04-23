@@ -90,7 +90,7 @@ export function ScenarioWorkbench({
             <p className="text-xs uppercase tracking-[0.28em] text-slate-400">AoE2 Build Lab</p>
             <h1 className="mt-2 text-3xl font-semibold text-slate-50">{draft.name}</h1>
             <p className="mt-3 max-w-3xl text-sm text-slate-300">
-              Author the build order in the left panel, then click Run simulation to populate the dashboard.
+              Author the queue and buildings in the left panel, then click Run simulation to populate the dashboard.
             </p>
           </div>
 
@@ -145,16 +145,16 @@ export function ScenarioWorkbench({
               <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Simulation output</p>
               <h2 className="mt-3 text-2xl font-semibold text-slate-50">Run the build to populate the dashboard</h2>
               <p className="mt-3 max-w-2xl text-sm text-slate-300">
-                The timeline, stockpile charts, cumulative unit graph, and warnings will appear here after you queue villagers, military units, technologies, and buildings and then click Run simulation.
+                The timeline, stockpile charts, cumulative unit graph, and warnings will appear here after you define the main click-order queue and building triggers and then click Run simulation.
               </p>
               <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <div className="stat-card">
                   <p className="text-xs uppercase tracking-[0.2em] text-slate-400">1</p>
-                  <p className="mt-2 text-sm text-slate-200">Set starting villagers and TC queue</p>
+                  <p className="mt-2 text-sm text-slate-200">Set the main queue</p>
                 </div>
                 <div className="stat-card">
                   <p className="text-xs uppercase tracking-[0.2em] text-slate-400">2</p>
-                  <p className="mt-2 text-sm text-slate-200">Add military, tech, and building rows</p>
+                  <p className="mt-2 text-sm text-slate-200">Add villager orders and buildings</p>
                 </div>
                 <div className="stat-card">
                   <p className="text-xs uppercase tracking-[0.2em] text-slate-400">3</p>

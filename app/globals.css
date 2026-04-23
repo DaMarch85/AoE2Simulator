@@ -69,7 +69,7 @@ textarea {
 }
 
 .container-shell {
-  width: min(1440px, calc(100vw - 32px));
+  width: min(1760px, calc(100vw - 32px));
   margin: 0 auto;
 }
 
@@ -126,7 +126,7 @@ textarea {
 
 .grid-board {
   display: grid;
-  grid-template-columns: minmax(420px, 540px) minmax(0, 1fr) minmax(280px, 320px);
+  grid-template-columns: minmax(860px, 980px) minmax(0, 1fr) minmax(280px, 320px);
   gap: 1rem;
 }
 

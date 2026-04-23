@@ -1,8 +1,9 @@
 import type {
-  BuildOrderTaskStep,
+  BuildOrderPlanStep,
   BuildQueueTrigger,
   QueueCategory,
   ResolutionIssue,
+  Ruleset,
   ScenarioDraft,
   ScriptEvent,
   Task,
@@ -17,7 +18,23 @@ function ageReachedRef(age: 'feudal' | 'castle' | 'imperial') {
   return `age_${age}_reached`;
 }
 
-function mapStepToTask(step: BuildOrderTaskStep): Task {
+function queueClickRef(index: number, rowId: string) {
+  return `bo_queue_click_${index + 1}_${rowId}`;
+}
+
+function queueCompleteRef(index: number, rowId: string) {
+  return `bo_queue_complete_${index + 1}_${rowId}`;
+}
+
+function buildStartRef(index: number, rowId: string) {
+  return `bo_build_start_${index + 1}_${rowId}`;
+}
+
+function buildCompleteRef(index: number, rowId: string) {
+  return `bo_build_complete_${index + 1}_${rowId}`;
+}
+
+function mapStepToTask(step: Exclude<BuildOrderPlanStep['task'], undefined>): Task {
   switch (step) {
     case 'hunt':
       return 'boar';
@@ -35,43 +52,75 @@ function mapStepToTask(step: BuildOrderTaskStep): Task {
   }
 }
 
-function mapStepsToTasks(steps: BuildOrderTaskStep[]): Task[] {
-  return steps.map(mapStepToTask);
+function normalizePlanSteps(steps: BuildOrderPlanStep[]) {
+  const tasks: Task[] = [];
+  const walkTilesBeforeTasks: number[] = [];
+  let pendingWalkTiles = 0;
+
+  for (const step of steps) {
+    if (step.kind === 'walking') {
+      pendingWalkTiles += step.tiles ?? 0;
+      continue;
+    }
+
+    if (!step.task) {
+      continue;
+    }
+
+    tasks.push(mapStepToTask(step.task));
+    walkTilesBeforeTasks.push(pendingWalkTiles);
+    pendingWalkTiles = 0;
+  }
+
+  if (tasks.length === 0) {
+    return {
+      tasks: ['idle'] as Task[],
+      walkTilesBeforeTasks: [0],
+    };
+  }
+
+  return { tasks, walkTilesBeforeTasks };
 }
 
-function labelForSteps(steps: BuildOrderTaskStep[]) {
+function labelForPlanSteps(steps: BuildOrderPlanStep[]) {
   if (steps.length === 0) {
     return 'No orders';
   }
 
   return steps
     .map((step) => {
-      switch (step) {
+      if (step.kind === 'walking') {
+        return `Walking (${step.tiles ?? 0})`;
+      }
+
+      switch (step.task) {
         case 'hunt':
           return 'Hunt';
         case 'farms':
           return 'Farm';
         default:
-          return `${step[0]?.toUpperCase() ?? ''}${step.slice(1)}`;
+          return step.task ? `${step.task[0]?.toUpperCase() ?? ''}${step.task.slice(1)}` : '—';
       }
     })
     .join(' → ');
 }
 
-function queueTrigger(previousRef: string | null): Trigger {
-  if (!previousRef) {
+function queueTrigger(previousStartRef: string | null): Trigger {
+  if (!previousStartRef) {
     return { type: 'on_start' };
   }
 
-  return { type: 'on_entity_complete', entityRef: previousRef };
+  return { type: 'on_entity_complete', entityRef: previousStartRef };
 }
 
-function buildTrigger(trigger: BuildQueueTrigger, previousRef: string | null): Trigger {
+function buildTrigger(trigger: BuildQueueTrigger, previousBuildCompleteRef: string | null): Trigger {
   switch (trigger) {
     case 'on_start':
       return { type: 'on_start' };
-    case 'prior_complete':
-      return previousRef ? { type: 'on_entity_complete', entityRef: previousRef } : { type: 'on_start' };
+    case 'prior_buildings_complete':
+      return previousBuildCompleteRef
+        ? { type: 'on_entity_complete', entityRef: previousBuildCompleteRef }
+        : { type: 'on_start' };
     case 'feudal_clicked':
       return { type: 'on_entity_complete', entityRef: ageClickRef('feudal') };
     case 'feudal_reached':
@@ -85,15 +134,28 @@ function buildTrigger(trigger: BuildQueueTrigger, previousRef: string | null): T
   }
 }
 
-function techQueueCategory(buildingId: string, techId: string): QueueCategory | undefined {
-  if (buildingId === 'town_center' && techId === 'loom') {
-    return 'town_center';
-  }
-
+function queueCategoryForProducer(buildingId: string): QueueCategory | undefined {
+  if (buildingId === 'town_center') return 'town_center';
+  if (buildingId === 'archery_range') return 'archery_range';
+  if (buildingId === 'stable') return 'stable';
+  if (buildingId === 'barracks') return 'barracks';
   return undefined;
 }
 
-export function compileBuildOrderEvents(draft: ScenarioDraft): {
+function queueLabel(category: string, itemId: string, ordinal?: number) {
+  if (category === 'villager') {
+    return `Villager ${ordinal ?? ''}`.trim();
+  }
+
+  return itemId
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+export function compileBuildOrderEvents(
+  draft: ScenarioDraft,
+  ruleset: Ruleset,
+): {
   events: ScriptEvent[];
   issues: ResolutionIssue[];
 } {
@@ -105,36 +167,41 @@ export function compileBuildOrderEvents(draft: ScenarioDraft): {
   const events: ScriptEvent[] = [];
   const issues: ResolutionIssue[] = [];
 
-  const startingVillagerActions = buildOrder.startingVillagers
-    .filter((row) => row.steps.length > 0)
-    .map((row) => ({
-      type: 'assign_specific_villager_plan' as const,
-      villagerId: row.villagerId,
-      tasks: mapStepsToTasks(row.steps),
-    }));
+  let previousQueueStartRef: string | null = null;
+  let villagerOrdinal = 0;
 
-  if (startingVillagerActions.length > 0) {
-    events.push({
-      id: 'bo_starting_villager_orders',
-      label: 'Starting villager orders',
-      lane: 'eco',
-      enabled: true,
-      trigger: { type: 'on_start' },
-      actions: startingVillagerActions,
-    });
-  }
+  for (let rowIndex = 0; rowIndex < buildOrder.queue.length; rowIndex += 1) {
+    const row = buildOrder.queue[rowIndex];
+    const trigger = queueTrigger(previousQueueStartRef);
+    const defaultStartRef = queueClickRef(rowIndex, row.id);
+    const defaultCompleteRef = queueCompleteRef(rowIndex, row.id);
 
-  let previousTownCenterRef: string | null = null;
-  for (const row of buildOrder.townCenterQueue) {
-    for (let index = 1; index <= row.quantity; index += 1) {
-      const completionRef = `bo_tc_${row.id}_${index}`;
-      const trigger = queueTrigger(previousTownCenterRef);
-      previousTownCenterRef = completionRef;
+    if (row.category === 'villager') {
+      villagerOrdinal += 1;
+      const plan = normalizePlanSteps(row.orderSteps);
+      previousQueueStartRef = defaultStartRef;
 
-      if (row.itemType === 'villager') {
+      if (villagerOrdinal <= ruleset.startingVillagers) {
         events.push({
-          id: `evt_tc_${row.id}_${index}`,
-          label: `Town Center: Villager ${index}/${row.quantity}`,
+          id: `evt_queue_${row.id}`,
+          label: queueLabel('villager', 'villager', villagerOrdinal),
+          lane: 'eco',
+          enabled: true,
+          trigger,
+          actions: [
+            {
+              type: 'assign_specific_villager_plan',
+              villagerId: villagerOrdinal,
+              tasks: plan.tasks,
+              walkTilesBeforeTasks: plan.walkTilesBeforeTasks,
+              startRef: defaultStartRef,
+            },
+          ],
+        });
+      } else {
+        events.push({
+          id: `evt_queue_${row.id}`,
+          label: queueLabel('villager', 'villager', villagerOrdinal),
           lane: 'production',
           enabled: true,
           trigger,
@@ -145,153 +212,139 @@ export function compileBuildOrderEvents(draft: ScenarioDraft): {
               atBuildingId: 'town_center',
               priority: 'normal',
               queueCategory: 'town_center',
-              assignedTasks: row.villagerSteps.length > 0 ? mapStepsToTasks(row.villagerSteps) : ['idle'],
-              completeRef: completionRef,
+              startRef: defaultStartRef,
+              completeRef: defaultCompleteRef,
+              assignedTasks: plan.tasks,
+              walkTilesBeforeTasks: plan.walkTilesBeforeTasks,
             },
           ],
+          notes: labelForPlanSteps(row.orderSteps),
         });
-        continue;
       }
 
-      if (row.itemType === 'loom') {
-        events.push({
-          id: `evt_tc_${row.id}_${index}`,
-          label: 'Town Center: Loom',
-          lane: 'research',
-          enabled: true,
-          trigger,
-          actions: [
-            {
-              type: 'research',
-              techId: 'loom',
-              atBuildingId: 'town_center',
-              priority: 'high',
-              queueCategory: 'town_center',
-              completeRef: completionRef,
-            },
-          ],
-        });
-        continue;
-      }
-
-      const targetAge = row.itemType === 'feudal_age'
-        ? 'feudal'
-        : row.itemType === 'castle_age'
-          ? 'castle'
-          : 'imperial';
-
-      events.push({
-        id: `evt_tc_${row.id}_${index}`,
-        label: `Town Center: ${targetAge[0].toUpperCase()}${targetAge.slice(1)} Age`,
-        lane: 'age',
-        enabled: true,
-        trigger,
-        actions: [
-          {
-            type: 'advance_age',
-            age: targetAge,
-            priority: 'high',
-            queueCategory: 'save',
-            startRef: ageClickRef(targetAge),
-            completeRef: ageReachedRef(targetAge),
-          },
-        ],
-      });
+      continue;
     }
-  }
 
-  const previousMilitaryRef = new Map<string, string | null>();
-  for (const row of buildOrder.militaryQueue) {
-    const key = row.producerType;
-    let currentPrevious = previousMilitaryRef.get(key) ?? null;
-
-    for (let index = 1; index <= row.quantity; index += 1) {
-      const completionRef = `bo_military_${row.id}_${index}`;
-      const trigger = queueTrigger(currentPrevious);
-      currentPrevious = completionRef;
+    if (row.category === 'military') {
+      const unit = ruleset.units[row.itemId];
+      const producerType = unit?.trainedAt[0] ?? 'archery_range';
+      previousQueueStartRef = defaultStartRef;
 
       events.push({
-        id: `evt_military_${row.id}_${index}`,
-        label: `${row.producerType.replace('_', ' ')}: ${row.unitId} ${index}/${row.quantity}`,
+        id: `evt_queue_${row.id}`,
+        label: queueLabel(row.category, row.itemId),
         lane: 'production',
         enabled: true,
         trigger,
         actions: [
           {
             type: 'train_once',
-            unitId: row.unitId,
-            atBuildingId: row.producerType,
+            unitId: row.itemId,
+            atBuildingId: producerType,
             priority: 'normal',
-            queueCategory: row.producerType,
-            completeRef: completionRef,
+            queueCategory: queueCategoryForProducer(producerType),
+            startRef: defaultStartRef,
+            completeRef: defaultCompleteRef,
           },
         ],
       });
+      continue;
     }
 
-    previousMilitaryRef.set(key, currentPrevious);
-  }
+    if (row.category === 'eco_technology' || row.category === 'military_technology') {
+      const tech = ruleset.techs[row.itemId];
+      const buildingId = tech?.researchedAt ?? 'blacksmith';
+      previousQueueStartRef = defaultStartRef;
 
-  const previousTechRef = new Map<string, string | null>();
-  for (const row of buildOrder.techQueue) {
-    const key = row.buildingId;
-    const trigger = queueTrigger(previousTechRef.get(key) ?? null);
-    const completionRef = `bo_tech_${row.id}`;
-    previousTechRef.set(key, completionRef);
+      events.push({
+        id: `evt_queue_${row.id}`,
+        label: queueLabel(row.category, row.itemId),
+        lane: 'research',
+        enabled: true,
+        trigger,
+        actions: [
+          {
+            type: 'research',
+            techId: row.itemId,
+            atBuildingId: buildingId,
+            priority: row.category === 'eco_technology' ? 'high' : 'normal',
+            queueCategory: queueCategoryForProducer(buildingId),
+            startRef: defaultStartRef,
+            completeRef: defaultCompleteRef,
+          },
+        ],
+      });
+      continue;
+    }
+
+    const targetAge =
+      row.itemId === 'feudal_age'
+        ? 'feudal'
+        : row.itemId === 'castle_age'
+          ? 'castle'
+          : 'imperial';
+
+    previousQueueStartRef = ageClickRef(targetAge);
 
     events.push({
-      id: `evt_tech_${row.id}`,
-      label: `${row.techId.replace(/_/g, ' ')}`,
-      lane: 'research',
+      id: `evt_queue_${row.id}`,
+      label: queueLabel(row.category, row.itemId),
+      lane: 'age',
       enabled: true,
       trigger,
       actions: [
         {
-          type: 'research',
-          techId: row.techId,
-          atBuildingId: row.buildingId,
+          type: 'advance_age',
+          age: targetAge,
           priority: 'high',
-          queueCategory: techQueueCategory(row.buildingId, row.techId),
-          completeRef: completionRef,
+          queueCategory: 'save',
+          startRef: ageClickRef(targetAge),
+          completeRef: ageReachedRef(targetAge),
         },
       ],
     });
   }
 
-  let previousBuildRef: string | null = null;
-  for (const row of buildOrder.buildingQueue) {
-    for (let index = 1; index <= row.quantity; index += 1) {
-      const completionRef = `bo_build_${row.id}_${index}`;
-      const trigger = buildTrigger(row.trigger, previousBuildRef);
-      previousBuildRef = completionRef;
+  let previousBuildCompleteRef: string | null = null;
+  for (let rowIndex = 0; rowIndex < buildOrder.buildingQueue.length; rowIndex += 1) {
+    const row = buildOrder.buildingQueue[rowIndex];
+    const startRef = buildStartRef(rowIndex, row.id);
+    const completeRef = buildCompleteRef(rowIndex, row.id);
+    const trigger = buildTrigger(row.trigger, previousBuildCompleteRef);
+    previousBuildCompleteRef = completeRef;
 
-      events.push({
-        id: `evt_build_${row.id}_${index}`,
-        label: `${row.buildingId.replace(/_/g, ' ')} ${index}/${row.quantity}`,
-        lane: 'buildings',
-        enabled: true,
-        trigger,
-        actions: [
-          {
-            type: 'build',
-            buildingId: row.buildingId,
-            builders: 1,
-            builderVillagerId: row.builderVillagerId,
-            priority: 'high',
-            completeRef: completionRef,
-          },
-        ],
-      });
-    }
+    const builderVillagerIds = [row.builderVillagerId, row.secondaryBuilderVillagerId].filter(
+      (value): value is number => value != null,
+    );
+
+    events.push({
+      id: `evt_build_${row.id}`,
+      label: queueLabel('building', row.buildingId),
+      lane: 'buildings',
+      enabled: true,
+      trigger,
+      actions: [
+        {
+          type: 'build',
+          buildingId: row.buildingId,
+          builders: Math.max(1, builderVillagerIds.length || 1),
+          builderVillagerIds: builderVillagerIds.length > 0 ? builderVillagerIds : undefined,
+          priority: 'high',
+          startRef,
+          completeRef,
+          walkToStartTiles: row.walkToStartTiles,
+          walkAfterCompleteTiles: row.walkAfterCompleteTiles,
+        },
+      ],
+    });
   }
 
-  const missingTcQueue = buildOrder.townCenterQueue.length === 0;
-  if (missingTcQueue) {
+  if (buildOrder.queue.length === 0) {
     issues.push({
-      id: 'build-order-empty-tc-queue',
+      id: 'build-order-empty-queue',
       severity: 'info',
-      message: 'The Town Center queue is empty. Add villagers, Loom, or age-ups before running a full build order.',
-      suggestedPatch: 'Use the Town Center queue grid on the left panel to add your first items.',
+      message: 'The main queue is empty. Add villagers, military, technologies, or age-ups before running the sim.',
+      suggestedPatch: 'Use Add queue order on the left panel.',
     });
   }
 
@@ -302,23 +355,27 @@ export function summarizeBuildOrder(draft: ScenarioDraft) {
   const buildOrder = draft.buildOrder;
   if (!buildOrder) {
     return {
-      tcItems: 0,
+      queueItems: 0,
+      villagerItems: 0,
       militaryItems: 0,
-      techItems: 0,
+      ecoTechItems: 0,
+      militaryTechItems: 0,
+      ageUpItems: 0,
       buildingItems: 0,
-      startVillagers: 0,
     };
   }
 
   return {
-    tcItems: buildOrder.townCenterQueue.reduce((sum, row) => sum + row.quantity, 0),
-    militaryItems: buildOrder.militaryQueue.reduce((sum, row) => sum + row.quantity, 0),
-    techItems: buildOrder.techQueue.length,
-    buildingItems: buildOrder.buildingQueue.reduce((sum, row) => sum + row.quantity, 0),
-    startVillagers: buildOrder.startingVillagers.length,
+    queueItems: buildOrder.queue.length,
+    villagerItems: buildOrder.queue.filter((row) => row.category === 'villager').length,
+    militaryItems: buildOrder.queue.filter((row) => row.category === 'military').length,
+    ecoTechItems: buildOrder.queue.filter((row) => row.category === 'eco_technology').length,
+    militaryTechItems: buildOrder.queue.filter((row) => row.category === 'military_technology').length,
+    ageUpItems: buildOrder.queue.filter((row) => row.category === 'age_up').length,
+    buildingItems: buildOrder.buildingQueue.length,
   };
 }
 
-export function buildOrderStepsLabel(steps: BuildOrderTaskStep[]) {
-  return labelForSteps(steps);
+export function buildOrderStepsLabel(steps: BuildOrderPlanStep[]) {
+  return labelForPlanSteps(steps);
 }

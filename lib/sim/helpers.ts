@@ -227,6 +227,11 @@ export function walkSeconds(
   }
 }
 
+
+export function tilesToSeconds(tiles: number) {
+  return Math.max(0, tiles);
+}
+
 export function ageRow(grid: AgePriorityGrid, age: Age) {
   return grid[age];
 }
