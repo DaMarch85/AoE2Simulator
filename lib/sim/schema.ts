@@ -76,6 +76,33 @@ export const LoomTimingSchema = z.enum([
 ]);
 export type LoomTiming = z.infer<typeof LoomTimingSchema>;
 
+
+export const QueueCategorySchema = z.enum(['town_center', 'archery_range', 'stable', 'barracks', 'save']);
+export type QueueCategory = z.infer<typeof QueueCategorySchema>;
+
+export const BuildOrderTaskStepSchema = z.enum([
+  'sheep',
+  'hunt',
+  'berries',
+  'deer',
+  'farms',
+  'wood',
+  'gold',
+  'stone',
+  'idle',
+]);
+export type BuildOrderTaskStep = z.infer<typeof BuildOrderTaskStepSchema>;
+
+export const BuildQueueTriggerSchema = z.enum([
+  'on_start',
+  'prior_complete',
+  'feudal_clicked',
+  'feudal_reached',
+  'castle_clicked',
+  'castle_reached',
+]);
+export type BuildQueueTrigger = z.infer<typeof BuildQueueTriggerSchema>;
+
 // -----------------------------------------------------------------------------
 // Utility shapes
 // -----------------------------------------------------------------------------
@@ -275,27 +302,42 @@ export const ActionSchema = z.discriminatedUnion('type', [
     to: TaskSchema,
   }),
   z.object({
+    type: z.literal('assign_specific_villager_plan'),
+    villagerId: z.number().int().positive(),
+    tasks: z.array(TaskSchema).default([]),
+  }),
+  z.object({
     type: z.literal('build'),
     buildingId: z.string().min(1),
     builders: z.number().int().positive(),
+    builderVillagerId: z.number().int().positive().optional(),
     priority: PrioritySchema.default('high'),
+    completeRef: z.string().min(1).optional(),
   }),
   z.object({
     type: z.literal('research'),
     techId: z.string().min(1),
     atBuildingId: z.string().min(1),
     priority: PrioritySchema.default('high'),
+    completeRef: z.string().min(1).optional(),
+    queueCategory: QueueCategorySchema.optional(),
   }),
   z.object({
     type: z.literal('train_once'),
     unitId: z.string().min(1),
     atBuildingId: z.string().min(1),
     priority: PrioritySchema.default('normal'),
+    completeRef: z.string().min(1).optional(),
+    queueCategory: QueueCategorySchema.optional(),
+    assignedTasks: z.array(TaskSchema).optional(),
   }),
   z.object({
     type: z.literal('advance_age'),
     age: AgeSchema,
     priority: PrioritySchema.default('high'),
+    completeRef: z.string().min(1).optional(),
+    startRef: z.string().min(1).optional(),
+    queueCategory: QueueCategorySchema.optional(),
   }),
   z.object({
     type: z.literal('reserve_resources'),
@@ -388,6 +430,64 @@ export const QuestionSchema = z.discriminatedUnion('kind', [
 ]);
 export type Question = z.infer<typeof QuestionSchema>;
 
+
+export const BuildOrderStartingVillagerSchema = z.object({
+  id: z.string().min(1),
+  villagerId: z.number().int().positive(),
+  steps: z.array(BuildOrderTaskStepSchema).max(5).default([]),
+});
+export type BuildOrderStartingVillager = z.infer<typeof BuildOrderStartingVillagerSchema>;
+
+export const TownCenterQueueItemTypeSchema = z.enum([
+  'villager',
+  'loom',
+  'feudal_age',
+  'castle_age',
+  'imperial_age',
+]);
+export type TownCenterQueueItemType = z.infer<typeof TownCenterQueueItemTypeSchema>;
+
+export const BuildOrderTownCenterQueueItemSchema = z.object({
+  id: z.string().min(1),
+  itemType: TownCenterQueueItemTypeSchema,
+  quantity: z.number().int().positive().default(1),
+  villagerSteps: z.array(BuildOrderTaskStepSchema).max(5).default([]),
+});
+export type BuildOrderTownCenterQueueItem = z.infer<typeof BuildOrderTownCenterQueueItemSchema>;
+
+export const BuildOrderMilitaryQueueItemSchema = z.object({
+  id: z.string().min(1),
+  producerType: z.enum(['archery_range', 'barracks', 'stable']),
+  unitId: z.string().min(1),
+  quantity: z.number().int().positive().default(1),
+});
+export type BuildOrderMilitaryQueueItem = z.infer<typeof BuildOrderMilitaryQueueItemSchema>;
+
+export const BuildOrderTechQueueItemSchema = z.object({
+  id: z.string().min(1),
+  buildingId: z.string().min(1),
+  techId: z.string().min(1),
+});
+export type BuildOrderTechQueueItem = z.infer<typeof BuildOrderTechQueueItemSchema>;
+
+export const BuildOrderBuildingQueueItemSchema = z.object({
+  id: z.string().min(1),
+  buildingId: z.string().min(1),
+  quantity: z.number().int().positive().default(1),
+  trigger: BuildQueueTriggerSchema.default('prior_complete'),
+  builderVillagerId: z.number().int().positive().optional(),
+});
+export type BuildOrderBuildingQueueItem = z.infer<typeof BuildOrderBuildingQueueItemSchema>;
+
+export const BuildOrderSchema = z.object({
+  startingVillagers: z.array(BuildOrderStartingVillagerSchema).default([]),
+  townCenterQueue: z.array(BuildOrderTownCenterQueueItemSchema).default([]),
+  militaryQueue: z.array(BuildOrderMilitaryQueueItemSchema).default([]),
+  techQueue: z.array(BuildOrderTechQueueItemSchema).default([]),
+  buildingQueue: z.array(BuildOrderBuildingQueueItemSchema).default([]),
+});
+export type BuildOrder = z.infer<typeof BuildOrderSchema>;
+
 export const ScenarioDraftSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -396,6 +496,7 @@ export const ScenarioDraftSchema = z.object({
   rulesetVersion: z.string().min(1).default('current'),
   baseOpeningId: z.string().min(1).optional(),
   assumptions: AssumptionsSchema,
+  buildOrder: BuildOrderSchema.optional(),
   userEvents: z.array(ScriptEventSchema).default([]),
   policies: z.array(PolicySchema).default([]),
   questions: z.array(QuestionSchema).default([]),
@@ -613,13 +714,7 @@ export const KeyframeSchema = z.object({
   stockpile: ResourceStockSchema,
   reserved: PartialResourceStockSchema.default({}),
   committed: PartialResourceStockSchema.default({}),
-  resourcePools: ResourcePoolStateSchema.default({
-    sheep: 0,
-    boar: 0,
-    berries: 0,
-    deer: 0,
-    farms: 0,
-  }),
+  resourcePools: ResourcePoolStateSchema.default({ sheep: 0, boar: 0, berries: 0, deer: 0, farms: 0 }),
   age: AgeSchema,
   population: z.number().int().nonnegative(),
   popCap: z.number().int().positive(),
@@ -653,6 +748,21 @@ export const DEFAULT_QUESTIONS: Question[] = [
   { id: 'q_bottleneck', kind: 'bottleneck_summary' },
 ];
 
+
+export function createDefaultBuildOrder(startingVillagers = 3): BuildOrder {
+  return BuildOrderSchema.parse({
+    startingVillagers: Array.from({ length: startingVillagers }, (_, index) => ({
+      id: `start_vil_${index + 1}`,
+      villagerId: index + 1,
+      steps: [],
+    })),
+    townCenterQueue: [],
+    militaryQueue: [],
+    techQueue: [],
+    buildingQueue: [],
+  });
+}
+
 export function createDefaultScenarioDraft(overrides: Partial<ScenarioDraft> = {}): ScenarioDraft {
   return ScenarioDraftSchema.parse({
     id: 'scn_default',
@@ -660,6 +770,7 @@ export function createDefaultScenarioDraft(overrides: Partial<ScenarioDraft> = {
     civId: 'generic',
     rulesetVersion: 'current',
     assumptions: AssumptionsSchema.parse({}),
+    buildOrder: createDefaultBuildOrder(),
     userEvents: [],
     policies: [],
     questions: DEFAULT_QUESTIONS,

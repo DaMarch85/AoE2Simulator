@@ -51,6 +51,8 @@ interface TrainingJob {
   unitId: string;
   startSec: number;
   endSec: number;
+  completeRef?: string;
+  assignedTasks?: Task[];
 }
 
 interface ResearchJob {
@@ -59,6 +61,7 @@ interface ResearchJob {
   startSec: number;
   endSec: number;
   ageTarget?: Age;
+  completeRef?: string;
 }
 
 interface BuildJob {
@@ -71,6 +74,7 @@ interface BuildJob {
   builderIds: number[];
   returnTasks: Record<number, Task>;
   started: boolean;
+  completeRef?: string;
 }
 
 interface Villager {
@@ -82,6 +86,8 @@ interface Villager {
   returnTask: Task | null;
   farmBuildUntil: number | null;
   farmFoodRemaining: number;
+  orders: Task[];
+  orderIndex: number;
 }
 
 interface VillagerVisual {
@@ -100,9 +106,9 @@ interface EngineState {
   units: Record<string, number>;
   buildings: Record<string, number>;
   tasks: Record<Task, number>;
-  nextVillagerAssignments: Task[];
+  nextVillagerPlans: Task[][];
   pendingActions: PendingAction[];
-  completedEntityRefs: Set<string>;
+  completedEntityRefs: Map<string, number>;
   firedEvents: Set<string>;
   researchedTechs: Set<string>;
   producers: Map<string, Producer>;
@@ -150,6 +156,8 @@ function createState(ruleset: Ruleset, scenario: ResolvedScenario): EngineState 
       returnTask: null,
       farmBuildUntil: null,
       farmFoodRemaining: 0,
+      orders: [],
+      orderIndex: -1,
     });
     tasks.sheep += 1;
     villagerVisuals.set(id, {
@@ -189,9 +197,9 @@ function createState(ruleset: Ruleset, scenario: ResolvedScenario): EngineState 
       market: 0,
     },
     tasks,
-    nextVillagerAssignments: [],
+    nextVillagerPlans: [],
     pendingActions: [],
-    completedEntityRefs: new Set<string>(),
+    completedEntityRefs: new Map<string, number>(),
     firedEvents: new Set<string>(),
     researchedTechs: new Set<string>(),
     producers: new Map<string, Producer>([
@@ -210,6 +218,26 @@ function createState(ruleset: Ruleset, scenario: ResolvedScenario): EngineState 
 
 function getVillagerLaneId(id: number) {
   return `villager_${id}`;
+}
+
+
+function addEventRef(state: EngineState, ref: string | undefined) {
+  if (!ref) {
+    return;
+  }
+  state.completedEntityRefs.set(ref, state.timeSec + 1);
+}
+
+function hasEventRef(state: EngineState, ref: string) {
+  return (state.completedEntityRefs.get(ref) ?? -1) >= state.timeSec;
+}
+
+function cleanupEventRefs(state: EngineState) {
+  for (const [ref, expiresAt] of state.completedEntityRefs.entries()) {
+    if (expiresAt < state.timeSec) {
+      state.completedEntityRefs.delete(ref);
+    }
+  }
 }
 
 function pushRawSegment(state: EngineState, segment: LaneSegment) {
@@ -305,6 +333,37 @@ function startVillagerWalk(state: EngineState, villager: Villager, nextTask: Tas
   setVillagerVisual(state, villager, 'walking', label);
 }
 
+function setVillagerPlan(state: EngineState, villager: Villager, tasks: Task[]) {
+  villager.orders = [...tasks];
+  villager.orderIndex = tasks.length > 0 ? 0 : -1;
+  const firstTask = tasks[0] ?? 'idle';
+  if (state.timeSec === 0) {
+    setVillagerTaskImmediate(state, villager, firstTask, taskLabel(firstTask));
+  } else if (firstTask === 'idle') {
+    setVillagerTaskImmediate(state, villager, 'idle', 'Idle');
+  } else if (firstTask === 'farms') {
+    tryStartFarmForVillager(state, ACTIVE_RULESET!, villager);
+  } else {
+    startVillagerWalk(state, villager, firstTask, `Walk to ${taskLabel(firstTask).toLowerCase()}`);
+  }
+}
+
+function nextPlannedTask(villager: Villager): Task | null {
+  if (villager.orderIndex < 0) {
+    return null;
+  }
+  return villager.orders[villager.orderIndex + 1] ?? null;
+}
+
+function stepVillagerPlan(state: EngineState, villager: Villager): Task | null {
+  const nextTask = nextPlannedTask(villager);
+  if (!nextTask) {
+    return null;
+  }
+  villager.orderIndex += 1;
+  return nextTask;
+}
+
 let ACTIVE_ASSUMPTIONS: ResolvedScenario['assumptions'] | null = null;
 
 function stateAssumptions(_state: EngineState) {
@@ -356,8 +415,36 @@ function recordMilestoneUnits(
   }
 }
 
-function addPendingAction(state: EngineState, action: Action, eventId: string, createdAt: number) {
-  if (action.type === 'assign_existing_villagers' || action.type === 'assign_next_villagers' || action.type === 'note') {
+function actionQueueRank(scenario: ResolvedScenario, state: EngineState, action: Action) {
+  if ('queueCategory' in action && action.queueCategory) {
+    const priorities = ageRow(scenario.assumptions.agePriorityGrid, state.age);
+    switch (action.queueCategory) {
+      case 'town_center':
+        return priorities.town_center;
+      case 'archery_range':
+        return priorities.archery_range;
+      case 'stable':
+        return priorities.stable;
+      case 'barracks':
+        return priorities.barracks;
+      case 'save':
+        return priorities.save;
+      default:
+        break;
+    }
+  }
+
+  return 'priority' in action ? priorityScore(action.priority) : priorityScore('normal');
+}
+
+function addPendingAction(
+  scenario: ResolvedScenario,
+  state: EngineState,
+  action: Action,
+  eventId: string,
+  createdAt: number,
+) {
+  if (action.type === 'assign_existing_villagers' || action.type === 'assign_next_villagers' || action.type === 'assign_specific_villager_plan' || action.type === 'note') {
     return false;
   }
 
@@ -365,7 +452,7 @@ function addPendingAction(state: EngineState, action: Action, eventId: string, c
     action,
     eventId,
     createdAt,
-    priority: 'priority' in action ? priorityScore(action.priority) : priorityScore('normal'),
+    priority: actionQueueRank(scenario, state, action),
   });
 
   state.pendingActions.sort((a, b) => {
@@ -377,6 +464,7 @@ function addPendingAction(state: EngineState, action: Action, eventId: string, c
 
   return true;
 }
+
 
 function producerByBuilding(state: EngineState, buildingId: string) {
   return [...state.producers.values()].filter((producer) => producer.buildingId === buildingId && producer.built);
@@ -416,9 +504,9 @@ function availableFoodTask(state: EngineState): Task | null {
 }
 
 function taskForNewVillager(state: EngineState): Task {
-  const next = state.nextVillagerAssignments.shift();
-  if (next) {
-    return next;
+  const nextPlan = state.nextVillagerPlans.shift();
+  if (nextPlan && nextPlan.length > 0) {
+    return nextPlan[0];
   }
 
   if (state.age === 'dark') {
@@ -625,8 +713,18 @@ function tryStartFarmForVillager(state: EngineState, ruleset: Ruleset, villager:
 }
 
 function reassignVillagerToFood(state: EngineState, ruleset: Ruleset, villager: Villager) {
+  const nextPlanned = stepVillagerPlan(state, villager);
+  if (nextPlanned) {
+    if (nextPlanned === 'farms') {
+      tryStartFarmForVillager(state, ruleset, villager);
+    } else {
+      startVillagerWalk(state, villager, nextPlanned, `Walk to ${taskLabel(nextPlanned).toLowerCase()}`);
+    }
+    return;
+  }
+
   const next = availableFoodTask(state);
-  if (next == null) {
+  if (!next) {
     setVillagerTaskImmediate(state, villager, 'idle', 'Idle');
     return;
   }
@@ -638,6 +736,7 @@ function reassignVillagerToFood(state: EngineState, ruleset: Ruleset, villager: 
 
   startVillagerWalk(state, villager, next, `Walk to ${taskLabel(next).toLowerCase()}`);
 }
+
 
 function applyFoodFallbacks(state: EngineState, ruleset: Ruleset) {
   for (const villager of state.villagers) {
@@ -662,7 +761,15 @@ function applyFoodFallbacks(state: EngineState, ruleset: Ruleset) {
       continue;
     }
     if (villager.task === 'farms' && villager.farmFoodRemaining <= 0) {
-      tryStartFarmForVillager(state, ruleset, villager);
+      const nextPlanned = stepVillagerPlan(state, villager);
+      if (nextPlanned && nextPlanned !== 'farms') {
+        startVillagerWalk(state, villager, nextPlanned, `Walk to ${taskLabel(nextPlanned).toLowerCase()}`);
+      } else {
+        if (nextPlanned === 'farms') {
+          villager.orderIndex -= 1;
+        }
+        tryStartFarmForVillager(state, ruleset, villager);
+      }
       continue;
     }
     if (villager.task === 'idle' && villager.pendingTask === 'farms') {
@@ -713,8 +820,17 @@ function tryApplyAction(
 
     case 'assign_next_villagers': {
       for (let index = 0; index < action.count; index += 1) {
-        state.nextVillagerAssignments.push(action.to);
+        state.nextVillagerPlans.push([action.to]);
       }
+      return true;
+    }
+
+    case 'assign_specific_villager_plan': {
+      const villager = state.villagers.find((item) => item.id === action.villagerId);
+      if (!villager) {
+        return false;
+      }
+      setVillagerPlan(state, villager, action.tasks);
       return true;
     }
 
@@ -734,7 +850,15 @@ function tryApplyAction(
         return false;
       }
 
-      const builders = chooseVillagers(state, action.builders, villagerSourcePreferenceForBuilding(action.buildingId));
+      const builders = action.builderVillagerId != null
+        ? (() => {
+            const villager = state.villagers.find((item) => item.id === action.builderVillagerId);
+            if (!villager || villager.pendingBuildJobId || villager.farmBuildUntil != null || villager.task === 'walk' || villager.task === 'build') {
+              return null;
+            }
+            return [villager];
+          })()
+        : chooseVillagers(state, action.builders, villagerSourcePreferenceForBuilding(action.buildingId));
       if (!builders) {
         return false;
       }
@@ -769,6 +893,7 @@ function tryApplyAction(
         builderIds: builders.map((builder) => builder.id),
         returnTasks,
         started: false,
+        completeRef: action.completeRef,
       });
 
       pushRawSegment(state, {
@@ -815,6 +940,8 @@ function tryApplyAction(
         unitId: action.unitId,
         startSec: state.timeSec,
         endSec: producer.busyUntil,
+        completeRef: action.completeRef,
+        assignedTasks: action.assignedTasks,
       });
       pushRawSegment(state, {
         laneId: producer.key,
@@ -844,6 +971,7 @@ function tryApplyAction(
         techId: action.techId,
         startSec: state.timeSec,
         endSec: producer.busyUntil,
+        completeRef: action.completeRef,
       });
       pushRawSegment(state, {
         laneId: producer.key,
@@ -871,6 +999,7 @@ function tryApplyAction(
         startSec: state.timeSec,
         endSec: producer.busyUntil,
         ageTarget: action.age,
+        completeRef: action.completeRef,
       });
       pushRawSegment(state, {
         laneId: producer.key,
@@ -880,6 +1009,7 @@ function tryApplyAction(
         state: 'researching',
       });
       milestones.ageClickedAt[action.age] = state.timeSec;
+      addEventRef(state, action.startRef);
       recordMilestoneUnits(milestones, state, 'age_click', action.age);
       return true;
     }
@@ -917,7 +1047,7 @@ function fireTriggeredEvents(
         isTriggered = state.age === event.trigger.age;
         break;
       case 'on_entity_complete':
-        isTriggered = state.completedEntityRefs.has(event.trigger.entityRef);
+        isTriggered = hasEventRef(state, event.trigger.entityRef);
         break;
       case 'when_affordable':
         isTriggered = canAfford(state.resources, event.trigger.cost);
@@ -937,7 +1067,7 @@ function fireTriggeredEvents(
     for (const action of event.actions) {
       const success = tryApplyAction(action, scenario, state, ruleset, milestones);
       if (!success) {
-        addPendingAction(state, action, event.id, state.timeSec);
+        addPendingAction(scenario, state, action, event.id, state.timeSec);
       }
     }
   }
@@ -990,6 +1120,10 @@ function buildHousePolicyAction(scenario: ResolvedScenario, state: EngineState, 
 }
 
 function buildLoomAction(state: EngineState, ruleset: Ruleset, scenario: ResolvedScenario): Action | null {
+  if (scenario.buildOrder) {
+    return null;
+  }
+
   const loomTiming = normalizedLoomTiming(scenario.assumptions.loomTiming);
   if (loomTiming === 'skip' || state.researchedTechs.has('loom') || state.researchJobs.some((job) => job.techId === 'loom')) {
     return null;
@@ -1063,27 +1197,21 @@ function buildKeepQueueActions(scenario: ResolvedScenario, state: EngineState) {
       continue;
     }
 
-    const producerType = policy.producerType;
-    if (
-      producerType !== 'town_center' &&
-      producerType !== 'archery_range' &&
-      producerType !== 'stable' &&
-      producerType !== 'barracks'
-    ) {
+    if (!['town_center', 'archery_range', 'stable', 'barracks'].includes(policy.producerType)) {
       continue;
     }
 
-    const producerCount = producerByBuilding(state, producerType).length;
-    if (producerType !== 'town_center' && producerCount === 0) {
+    const producerCount = producerByBuilding(state, policy.producerType).length;
+    if (policy.producerType !== 'town_center' && producerCount === 0) {
       continue;
     }
 
     actions.push({
-      rank: rankForProducer(producerType),
+      rank: rankForProducer(policy.producerType),
       action: {
         type: 'train_once',
         unitId: policy.productId,
-        atBuildingId: producerType,
+        atBuildingId: policy.producerType,
         priority: policy.priority,
       },
     });
@@ -1252,10 +1380,11 @@ function processFinishedTraining(state: EngineState, ruleset: Ruleset) {
 
     state.units[job.unitId] = (state.units[job.unitId] ?? 0) + 1;
     state.population += definition.populationCost;
-    state.completedEntityRefs.add(job.unitId);
+    addEventRef(state, job.unitId);
+    addEventRef(state, job.completeRef);
 
     if (job.unitId === 'villager') {
-      const nextTask = taskForNewVillager(state);
+      const nextTask = job.assignedTasks && job.assignedTasks.length > 0 ? job.assignedTasks[0] : taskForNewVillager(state);
       const villager: Villager = {
         id: state.villagers.length + 1,
         task: 'idle',
@@ -1265,6 +1394,8 @@ function processFinishedTraining(state: EngineState, ruleset: Ruleset) {
         returnTask: null,
         farmBuildUntil: null,
         farmFoodRemaining: 0,
+        orders: job.assignedTasks ? [...job.assignedTasks] : [nextTask],
+        orderIndex: 0,
       };
       state.villagers.push(villager);
       incrementTask(state, 'idle');
@@ -1290,7 +1421,8 @@ function processFinishedResearch(state: EngineState, ruleset: Ruleset, milestone
       producer.busyUntil = state.timeSec;
     }
     state.researchedTechs.add(job.techId);
-    state.completedEntityRefs.add(job.techId);
+    addEventRef(state, job.techId);
+    addEventRef(state, job.completeRef);
 
     if (job.ageTarget) {
       state.age = job.ageTarget;
@@ -1311,7 +1443,8 @@ function processFinishedBuilds(state: EngineState, ruleset: Ruleset) {
     if (job.buildingId === 'house') {
       state.popCap += ruleset.buildings.house.populationProvided;
     }
-    state.completedEntityRefs.add(job.buildingId);
+    addEventRef(state, job.buildingId);
+    addEventRef(state, job.completeRef);
     addProducerIfNeeded(state, ruleset, job.buildingId);
 
     for (const builderId of job.builderIds) {
@@ -1448,9 +1581,7 @@ export function runSimulation(
       break;
     }
 
-    if (trainingDone || researchDone || buildsDone) {
-      state.completedEntityRefs.clear();
-    }
+    cleanupEventRefs(state);
   }
 
   const totalTime = keyframes[keyframes.length - 1]?.timeSec ?? state.timeSec;

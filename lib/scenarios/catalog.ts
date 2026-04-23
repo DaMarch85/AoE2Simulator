@@ -1,9 +1,10 @@
-import type { ScenarioDraft } from "@/lib/sim/schema";
-import { exampleScenarioDraft } from "@/lib/fixtures/example-scenario";
+import type { ScenarioDraft } from '@/lib/sim/schema';
+import { exampleScenarioDraft } from '@/lib/fixtures/example-scenario';
 
 const fixtures: Record<string, ScenarioDraft> = {
   [exampleScenarioDraft.id]: exampleScenarioDraft,
   demo: exampleScenarioDraft,
+  scn_19pop_archers_castle: exampleScenarioDraft,
 };
 
 export function listScenarioFixtures() {
