@@ -76,7 +76,6 @@ export const LoomTimingSchema = z.enum([
 ]);
 export type LoomTiming = z.infer<typeof LoomTimingSchema>;
 
-
 export const QueueCategorySchema = z.enum(['town_center', 'archery_range', 'stable', 'barracks', 'save']);
 export type QueueCategory = z.infer<typeof QueueCategorySchema>;
 
@@ -241,6 +240,7 @@ export const AssumptionsSchema = z.object({
   deerPushed: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).default(0),
   boarLure: z.enum(['clean', 'late', 'failed']).default('clean'),
   loomTiming: LoomTimingSchema.default('dark_end'),
+  workerEfficiency: z.number().min(1).max(200).default(100),
   agePriorityGrid: AgePriorityGridSchema.default({
     dark: { town_center: 1, archery_range: 4, stable: 5, barracks: 5, save: 2 },
     feudal: { town_center: 1, archery_range: 2, stable: 4, barracks: 4, save: 3 },
@@ -466,7 +466,6 @@ export const QuestionSchema = z.discriminatedUnion('kind', [
   z.object({ id: z.string().min(1), kind: z.literal('bottleneck_summary') }),
 ]);
 export type Question = z.infer<typeof QuestionSchema>;
-
 
 export const BuildOrderQueueItemSchema = z.object({
   id: z.string().min(1),
@@ -753,19 +752,32 @@ export const DEFAULT_QUESTIONS: Question[] = [
   { id: 'q_bottleneck', kind: 'bottleneck_summary' },
 ];
 
+function planTask(task: BuildOrderTaskStep): BuildOrderPlanStep {
+  return { kind: 'task', task, tiles: 0 };
+}
 
-function defaultVillagerTaskForNumber(villagerNumber: number): BuildOrderTaskStep {
-  return villagerNumber <= 6 ? 'sheep' : 'wood';
+function walkingStep(tiles: number): BuildOrderPlanStep {
+  return { kind: 'walking', tiles };
 }
 
 export function defaultVillagerPlanSteps(villagerNumber: number): BuildOrderPlanStep[] {
-  return BuildOrderPlanStepSchema.array().parse([
-    {
-      kind: 'task',
-      task: defaultVillagerTaskForNumber(villagerNumber),
-      tiles: 0,
-    },
-  ]);
+  if (villagerNumber <= 6) {
+    return BuildOrderPlanStepSchema.array().parse([planTask('sheep'), planTask('hunt')]);
+  }
+
+  if (villagerNumber <= 9) {
+    return BuildOrderPlanStepSchema.array().parse([walkingStep(14), planTask('wood')]);
+  }
+
+  if (villagerNumber === 10) {
+    return BuildOrderPlanStepSchema.array().parse([walkingStep(12), planTask('berries')]);
+  }
+
+  if (villagerNumber <= 17) {
+    return BuildOrderPlanStepSchema.array().parse([planTask('hunt')]);
+  }
+
+  return BuildOrderPlanStepSchema.array().parse([planTask('wood')]);
 }
 
 export function createDefaultQueueVillagerRow(villagerNumber: number): BuildOrderQueueItem {
@@ -777,9 +789,9 @@ export function createDefaultQueueVillagerRow(villagerNumber: number): BuildOrde
   });
 }
 
-export function createDefaultBuildOrder(startingVillagers = 3): BuildOrder {
+export function createDefaultBuildOrder(_startingVillagers = 3): BuildOrder {
   return BuildOrderSchema.parse({
-    queue: Array.from({ length: startingVillagers }, (_, index) => createDefaultQueueVillagerRow(index + 1)),
+    queue: Array.from({ length: 17 }, (_, index) => createDefaultQueueVillagerRow(index + 1)),
     buildingQueue: [
       {
         id: 'build_house_1',
@@ -796,6 +808,30 @@ export function createDefaultBuildOrder(startingVillagers = 3): BuildOrder {
         trigger: 'on_start',
         builderVillagerId: 3,
         walkToStartTiles: 0,
+        walkAfterCompleteTiles: 0,
+      },
+      {
+        id: 'build_lumber_camp_1',
+        buildingId: 'lumber_camp',
+        trigger: 'on_start',
+        builderVillagerId: 7,
+        walkToStartTiles: 2,
+        walkAfterCompleteTiles: 0,
+      },
+      {
+        id: 'build_house_3',
+        buildingId: 'house',
+        trigger: 'on_start',
+        builderVillagerId: 8,
+        walkToStartTiles: 7,
+        walkAfterCompleteTiles: 0,
+      },
+      {
+        id: 'build_mill_1',
+        buildingId: 'mill',
+        trigger: 'on_start',
+        builderVillagerId: 10,
+        walkToStartTiles: 1,
         walkAfterCompleteTiles: 0,
       },
     ],

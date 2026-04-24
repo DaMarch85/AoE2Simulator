@@ -1,7 +1,6 @@
 'use client';
 
 import type {
-  Age,
   BuildOrder,
   BuildOrderPlanStep,
   BuildOrderQueueItem,
@@ -17,22 +16,23 @@ import {
 } from '@/lib/sim/schema';
 
 type StepSlot = 0 | 1 | 2 | 3 | 4;
+type QueueUiType =
+  | 'villager'
+  | 'military'
+  | 'eco_technology'
+  | 'military_technology'
+  | 'feudal_age'
+  | 'castle_age'
+  | 'imperial_age';
 
-const ageRows: Age[] = ['dark', 'feudal', 'castle', 'imperial'];
-const priorityColumns = [
-  { key: 'town_center', label: 'TC' },
-  { key: 'archery_range', label: 'Range' },
-  { key: 'stable', label: 'Stable' },
-  { key: 'barracks', label: 'Barracks' },
-  { key: 'save', label: 'Save' },
-] as const;
-
-const queueCategoryOptions: Array<{ value: BuildOrderQueueItemCategory; label: string }> = [
+const queueTypeOptions: Array<{ value: QueueUiType; label: string }> = [
   { value: 'villager', label: 'Villager' },
   { value: 'military', label: 'Military' },
   { value: 'eco_technology', label: 'Eco technology' },
   { value: 'military_technology', label: 'Military technology' },
-  { value: 'age_up', label: 'Age up' },
+  { value: 'feudal_age', label: 'Feudal Age' },
+  { value: 'castle_age', label: 'Castle Age' },
+  { value: 'imperial_age', label: 'Imperial Age' },
 ];
 
 const planStepOptions = [
@@ -49,7 +49,7 @@ const planStepOptions = [
 ] as const;
 
 const buildingTriggerOptions: Array<{ value: BuildQueueTrigger; label: string }> = [
-  { value: 'on_start', label: 'On start' },
+  { value: 'on_start', label: 'On start/asap' },
   { value: 'prior_buildings_complete', label: 'Prior buildings complete' },
   { value: 'feudal_clicked', label: 'Feudal age clicked' },
   { value: 'feudal_reached', label: 'Feudal age reached' },
@@ -72,14 +72,6 @@ const ecoTechIds = new Set([
   'heavy_plow',
   'crop_rotation',
 ]);
-
-function ageLabel(age: Age) {
-  return `${age[0]?.toUpperCase() ?? ''}${age.slice(1)}`;
-}
-
-function cyclePriority(value: number) {
-  return value >= 5 ? 1 : value + 1;
-}
 
 function rowId(prefix: string) {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -166,23 +158,30 @@ function defaultItemIdForCategory(category: BuildOrderQueueItemCategory, ruleset
   }
 
   if (category === 'military') {
-    return (
-      Object.values(ruleset.units).find((unit) => unit.id !== 'villager')?.id ??
-      'archer'
-    );
+    return Object.values(ruleset.units).find((unit) => unit.id !== 'villager')?.id ?? 'archer';
   }
 
   if (category === 'eco_technology') {
     return (
-      Object.values(ruleset.techs).find((tech) => tech.id !== 'feudal_age' && tech.id !== 'castle_age' && tech.id !== 'imperial_age' && ecoTechIds.has(tech.id))?.id ??
-      'loom'
+      Object.values(ruleset.techs).find(
+        (tech) =>
+          tech.id !== 'feudal_age' &&
+          tech.id !== 'castle_age' &&
+          tech.id !== 'imperial_age' &&
+          ecoTechIds.has(tech.id),
+      )?.id ?? 'loom'
     );
   }
 
   if (category === 'military_technology') {
     return (
-      Object.values(ruleset.techs).find((tech) => tech.id !== 'feudal_age' && tech.id !== 'castle_age' && tech.id !== 'imperial_age' && !ecoTechIds.has(tech.id))?.id ??
-      'fletching'
+      Object.values(ruleset.techs).find(
+        (tech) =>
+          tech.id !== 'feudal_age' &&
+          tech.id !== 'castle_age' &&
+          tech.id !== 'imperial_age' &&
+          !ecoTechIds.has(tech.id),
+      )?.id ?? 'fletching'
     );
   }
 
@@ -190,10 +189,6 @@ function defaultItemIdForCategory(category: BuildOrderQueueItemCategory, ruleset
 }
 
 function itemOptionsForCategory(category: BuildOrderQueueItemCategory, ruleset: Ruleset) {
-  if (category === 'villager') {
-    return [{ value: 'villager', label: 'Villager' }];
-  }
-
   if (category === 'military') {
     return Object.values(ruleset.units)
       .filter((unit) => unit.id !== 'villager')
@@ -202,28 +197,32 @@ function itemOptionsForCategory(category: BuildOrderQueueItemCategory, ruleset: 
 
   if (category === 'eco_technology') {
     return Object.values(ruleset.techs)
-      .filter((tech) => tech.id !== 'feudal_age' && tech.id !== 'castle_age' && tech.id !== 'imperial_age' && ecoTechIds.has(tech.id))
+      .filter(
+        (tech) =>
+          tech.id !== 'feudal_age' &&
+          tech.id !== 'castle_age' &&
+          tech.id !== 'imperial_age' &&
+          ecoTechIds.has(tech.id),
+      )
       .map((tech) => ({ value: tech.id, label: tech.name }));
   }
 
   if (category === 'military_technology') {
     return Object.values(ruleset.techs)
-      .filter((tech) => tech.id !== 'feudal_age' && tech.id !== 'castle_age' && tech.id !== 'imperial_age' && !ecoTechIds.has(tech.id))
+      .filter(
+        (tech) =>
+          tech.id !== 'feudal_age' &&
+          tech.id !== 'castle_age' &&
+          tech.id !== 'imperial_age' &&
+          !ecoTechIds.has(tech.id),
+      )
       .map((tech) => ({ value: tech.id, label: tech.name }));
   }
 
-  return [
-    { value: 'feudal_age', label: 'Feudal Age' },
-    { value: 'castle_age', label: 'Castle Age' },
-    { value: 'imperial_age', label: 'Imperial Age' },
-  ];
+  return [];
 }
 
-function withQueueRowUpdated(
-  buildOrder: BuildOrder,
-  rowIndex: number,
-  nextRow: BuildOrderQueueItem,
-) {
+function withQueueRowUpdated(buildOrder: BuildOrder, rowIndex: number, nextRow: BuildOrderQueueItem) {
   return {
     ...buildOrder,
     queue: buildOrder.queue.map((row, index) => (index === rowIndex ? nextRow : row)),
@@ -235,6 +234,45 @@ function copyQueueRow(row: BuildOrderQueueItem): BuildOrderQueueItem {
     ...row,
     id: rowId(`queue_copy_${row.category}`),
     orderSteps: row.orderSteps.map((step) => ({ ...step })),
+  };
+}
+
+function uiTypeForRow(row: BuildOrderQueueItem): QueueUiType {
+  if (row.category === 'age_up') {
+    return row.itemId as QueueUiType;
+  }
+  return row.category as QueueUiType;
+}
+
+function buildRowFromUiType(
+  uiType: QueueUiType,
+  ruleset: Ruleset,
+  villagerNumber: number,
+  existing?: BuildOrderQueueItem,
+): BuildOrderQueueItem {
+  if (uiType === 'villager') {
+    return {
+      id: existing?.id ?? rowId('queue_villager'),
+      category: 'villager',
+      itemId: 'villager',
+      orderSteps: defaultVillagerPlanSteps(villagerNumber),
+    };
+  }
+
+  if (uiType === 'feudal_age' || uiType === 'castle_age' || uiType === 'imperial_age') {
+    return {
+      id: existing?.id ?? rowId('queue_age_up'),
+      category: 'age_up',
+      itemId: uiType,
+      orderSteps: [],
+    };
+  }
+
+  return {
+    id: existing?.id ?? rowId(`queue_${uiType}`),
+    category: uiType as BuildOrderQueueItemCategory,
+    itemId: defaultItemIdForCategory(uiType as BuildOrderQueueItemCategory, ruleset),
+    orderSteps: [],
   };
 }
 
@@ -260,7 +298,14 @@ export function BuildOrderPanel({
     });
   };
 
+  const insertQueueRowAt = (rowIndex: number, nextRow: BuildOrderQueueItem) => {
+    const nextQueue = [...buildOrder.queue];
+    nextQueue.splice(rowIndex, 0, nextRow);
+    withBuildOrder({ ...buildOrder, queue: nextQueue });
+  };
+
   const villagerSelectorMax = Math.max(40, countVillagerRows(buildOrder.queue) + 10);
+  const visibleQueueRows = Math.max(30, buildOrder.queue.length);
 
   return (
     <section className="panel p-4">
@@ -274,9 +319,9 @@ export function BuildOrderPanel({
 
       <div className="space-y-5">
         <section className="border border-slate-700/70 bg-slate-950/45 p-3">
-          {sectionHeader('Scenario + assumptions', 'Core setup plus age-by-age spend priorities.')}
-          <div className="space-y-3">
-            <label className="block">
+          {sectionHeader('Scenario + assumptions', 'Keep this simple: name, civilization, and worker efficiency.')}
+          <div className="grid gap-3 md:grid-cols-3">
+            <label className="block md:col-span-1">
               <span className="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-400">Scenario name</span>
               <input
                 className="w-full border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-sm text-slate-100"
@@ -285,224 +330,135 @@ export function BuildOrderPanel({
               />
             </label>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="block">
-                <span className="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-400">Civilization</span>
-                <select
-                  className="w-full border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-sm"
-                  value={draft.civId}
-                  onChange={(event) => onDraftChange({ ...draft, civId: event.target.value, buildOrder })}
-                >
-                  <option value="generic">Generic</option>
-                </select>
-              </label>
+            <label className="block">
+              <span className="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-400">Civilization</span>
+              <select
+                className="w-full border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-sm"
+                value={draft.civId}
+                onChange={(event) => onDraftChange({ ...draft, civId: event.target.value, buildOrder })}
+              >
+                {Object.values(ruleset.civilizations).map((civilization) => (
+                  <option key={civilization.id} value={civilization.id}>
+                    {civilization.name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-              <label className="block">
-                <span className="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-400">Map preset</span>
-                <input
-                  className="w-full border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-sm"
-                  value={draft.assumptions.mapPreset}
-                  onChange={(event) =>
-                    onDraftChange({
-                      ...draft,
-                      buildOrder,
-                      assumptions: { ...draft.assumptions, mapPreset: event.target.value },
-                    })
-                  }
-                />
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-400">Execution</span>
-                <select
-                  className="w-full border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-sm"
-                  value={draft.assumptions.executionProfile}
-                  onChange={(event) =>
-                    onDraftChange({
-                      ...draft,
-                      buildOrder,
-                      assumptions: {
-                        ...draft.assumptions,
-                        executionProfile: event.target.value as ScenarioDraft['assumptions']['executionProfile'],
-                      },
-                    })
-                  }
-                >
-                  <option value="perfect">Perfect</option>
-                  <option value="clean">Clean</option>
-                  <option value="ladder">Ladder</option>
-                </select>
-              </label>
-
-              <label className="block">
-                <span className="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-400">Deer pushed</span>
-                <select
-                  className="w-full border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-sm"
-                  value={draft.assumptions.deerPushed}
-                  onChange={(event) =>
-                    onDraftChange({
-                      ...draft,
-                      buildOrder,
-                      assumptions: {
-                        ...draft.assumptions,
-                        deerPushed: Number(event.target.value) as 0 | 1 | 2 | 3,
-                      },
-                    })
-                  }
-                >
-                  {[0, 1, 2, 3].map((value) => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <div className="overflow-x-auto border border-slate-800/70 bg-slate-950/45">
-              <table className="min-w-full border-collapse text-sm">
-                <thead>
-                  <tr className="text-slate-400">
-                    <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Age</th>
-                    {priorityColumns.map((column) => (
-                      <th key={column.key} className="border border-slate-800/70 px-2 py-2 font-medium">
-                        {column.label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {ageRows.map((age) => (
-                    <tr key={age}>
-                      <td className="border border-slate-800/70 px-2 py-2 font-medium text-slate-200">{ageLabel(age)}</td>
-                      {priorityColumns.map((column) => {
-                        const value = draft.assumptions.agePriorityGrid[age][column.key];
-                        return (
-                          <td key={`${age}-${column.key}`} className="border border-slate-800/70 p-1">
-                            <button
-                              type="button"
-                              className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm font-medium text-slate-100"
-                              onClick={() =>
-                                onDraftChange({
-                                  ...draft,
-                                  buildOrder,
-                                  assumptions: {
-                                    ...draft.assumptions,
-                                    agePriorityGrid: {
-                                      ...draft.assumptions.agePriorityGrid,
-                                      [age]: {
-                                        ...draft.assumptions.agePriorityGrid[age],
-                                        [column.key]: cyclePriority(value),
-                                      },
-                                    },
-                                  },
-                                })
-                              }
-                            >
-                              {value}
-                            </button>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <label className="block">
+              <span className="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-400">Worker efficiency (%)</span>
+              <input
+                type="number"
+                min={1}
+                max={200}
+                className="w-full border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-sm"
+                value={draft.assumptions.workerEfficiency}
+                onChange={(event) =>
+                  onDraftChange({
+                    ...draft,
+                    buildOrder,
+                    assumptions: {
+                      ...draft.assumptions,
+                      workerEfficiency: Math.min(200, Math.max(1, Number(event.target.value) || 100)),
+                    },
+                  })
+                }
+              />
+            </label>
           </div>
         </section>
 
         <section className="border border-slate-700/70 bg-slate-950/45 p-3">
           {sectionHeader(
             'Main queue',
-            'One ordered list for villagers, military, eco tech, military tech, and age-ups. Each row can fire once the prior row has been clicked.',
+            'One ordered list for villagers, military, techs, and age-ups. Each row can fire once the prior row has been clicked.',
           )}
-          <div className="overflow-x-auto">
-            <table className="min-w-full border-collapse text-sm">
+          <div>
+            <table className="w-full border-collapse text-sm table-fixed">
               <thead>
                 <tr className="text-slate-400">
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">#</th>
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Type</th>
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Specific</th>
+                  <th className="w-12 border border-slate-800/70 px-2 py-2 text-left font-medium">#</th>
+                  <th className="w-56 border border-slate-800/70 px-2 py-2 text-left font-medium">Type</th>
                   {(['First', 'Then', 'Then', 'Then', 'Then'] as const).map((label, index) => (
-                    <th key={`${label}-${index}`} className="border border-slate-800/70 px-2 py-2 text-left font-medium">
+                    <th key={`${label}-${index}`} className="w-24 border border-slate-800/70 px-2 py-2 text-left font-medium">
                       {label}
                     </th>
                   ))}
-                  <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Actions</th>
+                  <th className="w-28 border border-slate-800/70 px-2 py-2 text-left font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {buildOrder.queue.map((row, rowIndex) => {
+                {Array.from({ length: visibleQueueRows }, (_, rowIndex) => {
+                  const row = buildOrder.queue[rowIndex];
+                  const isEmpty = !row;
                   const villagerNumber = villagerNumberAtRow(buildOrder.queue, rowIndex);
-                  const specificOptions = itemOptionsForCategory(row.category, ruleset);
+                  const uiType = row ? uiTypeForRow(row) : '';
+                  const specificOptions = row ? itemOptionsForCategory(row.category, ruleset) : [];
+
                   return (
-                    <tr key={row.id}>
+                    <tr key={row?.id ?? `empty-row-${rowIndex}`}>
                       <td className="border border-slate-800/70 px-2 py-2 font-medium text-slate-200">{rowIndex + 1}</td>
-                      <td className="border border-slate-800/70 p-1">
-                        <select
-                          className="w-full min-w-32 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                          value={row.category}
-                          onChange={(event) => {
-                            const nextCategory = event.target.value as BuildOrderQueueItemCategory;
-                            const nextQueue = buildOrder.queue.map((item, index) =>
-                              index === rowIndex
-                                ? {
-                                    ...item,
-                                    category: nextCategory,
-                                    itemId: defaultItemIdForCategory(nextCategory, ruleset),
-                                    orderSteps:
-                                      nextCategory === 'villager'
-                                        ? defaultVillagerPlanSteps(villagerNumberAtRow(
-                                            buildOrder.queue.map((candidate, candidateIndex) =>
-                                              candidateIndex === rowIndex ? { ...candidate, category: nextCategory } : candidate,
-                                            ),
-                                            rowIndex,
-                                          ))
-                                        : [],
-                                  }
-                                : item,
-                            );
-                            withBuildOrder({ ...buildOrder, queue: nextQueue });
-                          }}
-                        >
-                          {queueCategoryOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="border border-slate-800/70 p-1">
-                        {row.category === 'villager' ? (
-                          <div className="min-w-28 border border-slate-800/70 bg-slate-950/40 px-2 py-2 text-sm text-slate-200">
-                            Villager {villagerNumber}
-                          </div>
-                        ) : (
+                      <td className="border border-slate-800/70 p-1 align-top">
+                        <div className="space-y-1">
                           <select
-                            className="w-full min-w-36 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                            value={row.itemId}
-                            onChange={(event) =>
-                              withBuildOrder(
-                                withQueueRowUpdated(buildOrder, rowIndex, {
-                                  ...row,
-                                  itemId: event.target.value,
-                                }),
-                              )
-                            }
+                            className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                            value={uiType}
+                            onChange={(event) => {
+                              const nextUiType = event.target.value as QueueUiType;
+                              if (!nextUiType) return;
+                              const nextRow = buildRowFromUiType(
+                                nextUiType,
+                                ruleset,
+                                countVillagerRows(buildOrder.queue.slice(0, rowIndex + 1)) + (row?.category === 'villager' ? 0 : 1),
+                                row,
+                              );
+
+                              if (isEmpty) {
+                                insertQueueRowAt(rowIndex, nextRow);
+                                return;
+                              }
+
+                              withBuildOrder(withQueueRowUpdated(buildOrder, rowIndex, nextRow));
+                            }}
                           >
-                            {specificOptions.map((option) => (
+                            <option value="">—</option>
+                            {queueTypeOptions.map((option) => (
                               <option key={option.value} value={option.value}>
                                 {option.label}
                               </option>
                             ))}
                           </select>
-                        )}
+
+                          {row && row.category !== 'villager' && row.category !== 'age_up' ? (
+                            <select
+                              className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                              value={row.itemId}
+                              onChange={(event) =>
+                                withBuildOrder(
+                                  withQueueRowUpdated(buildOrder, rowIndex, {
+                                    ...row,
+                                    itemId: event.target.value,
+                                  }),
+                                )
+                              }
+                            >
+                              {specificOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          ) : null}
+
+                          {row?.category === 'villager' ? (
+                            <div className="text-xs text-slate-500">Villager {villagerNumber}</div>
+                          ) : null}
+                        </div>
                       </td>
                       {[0, 1, 2, 3, 4].map((slot) => (
-                        <td key={`${row.id}-${slot}`} className="border border-slate-800/70 p-1 align-top">
-                          {row.category === 'villager' ? (
-                            <div className="min-w-[7rem] space-y-1">
+                        <td key={`${row?.id ?? `empty-${rowIndex}`}-${slot}`} className="border border-slate-800/70 p-1 align-top">
+                          {row?.category === 'villager' ? (
+                            <div className="space-y-1">
                               <select
                                 className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
                                 value={planStepValue(stepAt(row.orderSteps, slot as StepSlot))}
@@ -523,63 +479,62 @@ export function BuildOrderPanel({
                                 ))}
                               </select>
                               {stepAt(row.orderSteps, slot as StepSlot)?.kind === 'walking' ? (
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Tiles</span>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
-                                    value={stepAt(row.orderSteps, slot as StepSlot)?.tiles ?? 0}
-                                    onChange={(event) =>
-                                      withBuildOrder(
-                                        withQueueRowUpdated(buildOrder, rowIndex, {
-                                          ...row,
-                                          orderSteps: updateWalkingTiles(
-                                            row.orderSteps,
-                                            slot as StepSlot,
-                                            Number(event.target.value) || 0,
-                                          ),
-                                        }),
-                                      )
-                                    }
-                                  />
-                                </div>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
+                                  value={stepAt(row.orderSteps, slot as StepSlot)?.tiles ?? 0}
+                                  onChange={(event) =>
+                                    withBuildOrder(
+                                      withQueueRowUpdated(buildOrder, rowIndex, {
+                                        ...row,
+                                        orderSteps: updateWalkingTiles(
+                                          row.orderSteps,
+                                          slot as StepSlot,
+                                          Number(event.target.value) || 0,
+                                        ),
+                                      }),
+                                    )
+                                  }
+                                />
                               ) : (
                                 <div className="h-7" />
                               )}
                             </div>
                           ) : (
-                            <div className="h-[4.2rem] border border-slate-900/40 bg-slate-950/25" />
+                            <div className="h-[4.2rem] bg-slate-950/10" />
                           )}
                         </td>
                       ))}
-                      <td className="border border-slate-800/70 p-1">
-                        <div className="flex min-w-32 gap-2">
-                          <button
-                            type="button"
-                            className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
-                            onClick={() =>
-                              withBuildOrder({
-                                ...buildOrder,
-                                queue: [...buildOrder.queue, copyQueueRow(row)],
-                              })
-                            }
-                          >
-                            Copy
-                          </button>
-                          <button
-                            type="button"
-                            className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
-                            onClick={() =>
-                              withBuildOrder({
-                                ...buildOrder,
-                                queue: buildOrder.queue.filter((item) => item.id !== row.id),
-                              })
-                            }
-                          >
-                            Remove
-                          </button>
-                        </div>
+                      <td className="border border-slate-800/70 p-1 align-top">
+                        {row ? (
+                          <div className="flex flex-col gap-2">
+                            <button
+                              type="button"
+                              className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                              onClick={() =>
+                                withBuildOrder({
+                                  ...buildOrder,
+                                  queue: [...buildOrder.queue, copyQueueRow(row)],
+                                })
+                              }
+                            >
+                              Copy
+                            </button>
+                            <button
+                              type="button"
+                              className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                              onClick={() =>
+                                withBuildOrder({
+                                  ...buildOrder,
+                                  queue: buildOrder.queue.filter((item) => item.id !== row.id),
+                                })
+                              }
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ) : null}
                       </td>
                     </tr>
                   );
@@ -609,8 +564,8 @@ export function BuildOrderPanel({
             'Buildings',
             'Separate building triggers, one or two builders, and explicit walking tiles to and from the build.',
           )}
-          <div className="overflow-x-auto">
-            <table className="min-w-full border-collapse text-sm">
+          <div>
+            <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="text-slate-400">
                   <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Building</th>

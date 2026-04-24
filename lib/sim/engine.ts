@@ -1200,8 +1200,6 @@ function buildHousePolicyAction(scenario: ResolvedScenario, state: EngineState, 
     buildingId: 'house',
     builders: policy.builders,
     priority: policy.priority,
-    walkToStartTiles: 0,
-    walkAfterCompleteTiles: 0,
   };
 }
 
@@ -1283,31 +1281,22 @@ function buildKeepQueueActions(scenario: ResolvedScenario, state: EngineState) {
       continue;
     }
 
-    const producerType =
-      policy.producerType === 'town_center' ||
-      policy.producerType === 'archery_range' ||
-      policy.producerType === 'stable' ||
-      policy.producerType === 'barracks'
-        ? policy.producerType
-        : null;
-
-    if (!producerType) {
+    if (!['town_center', 'archery_range', 'stable', 'barracks'].includes(policy.producerType)) {
       continue;
     }
 
-    const producerCount = producerByBuilding(state, producerType).length;
-    if (producerType !== 'town_center' && producerCount === 0) {
+    const producerCount = producerByBuilding(state, policy.producerType).length;
+    if (policy.producerType !== 'town_center' && producerCount === 0) {
       continue;
     }
 
     actions.push({
-      rank: rankForProducer(producerType),
+      rank: rankForProducer(policy.producerType),
       action: {
         type: 'train_once',
         unitId: policy.productId,
-        atBuildingId: producerType,
+        atBuildingId: policy.producerType,
         priority: policy.priority,
-        walkTilesBeforeTasks: [],
       },
     });
   }
@@ -1371,48 +1360,50 @@ function recordKeyframe(keyframes: Keyframe[], state: EngineState) {
   });
 }
 
-function processResourceGathering(state: EngineState, ruleset: Ruleset) {
+function processResourceGathering(state: EngineState, ruleset: Ruleset, workerEfficiency = 100) {
+  const gatherMultiplier = Math.max(0, workerEfficiency) / 100;
+
   for (const villager of state.villagers) {
     switch (villager.task) {
       case 'sheep': {
-        const gathered = Math.min(ruleset.gatherRates.sheep, state.resourcePools.sheep);
+        const gathered = Math.min(ruleset.gatherRates.sheep * gatherMultiplier, state.resourcePools.sheep);
         state.resources.food += gathered;
         state.resourcePools.sheep = Math.max(0, state.resourcePools.sheep - gathered);
         break;
       }
       case 'boar': {
-        const gathered = Math.min(ruleset.gatherRates.boar, state.resourcePools.boar);
+        const gathered = Math.min(ruleset.gatherRates.boar * gatherMultiplier, state.resourcePools.boar);
         state.resources.food += gathered;
         state.resourcePools.boar = Math.max(0, state.resourcePools.boar - gathered);
         break;
       }
       case 'berries': {
-        const gathered = Math.min(ruleset.gatherRates.berries, state.resourcePools.berries);
+        const gathered = Math.min(ruleset.gatherRates.berries * gatherMultiplier, state.resourcePools.berries);
         state.resources.food += gathered;
         state.resourcePools.berries = Math.max(0, state.resourcePools.berries - gathered);
         break;
       }
       case 'deer': {
-        const gathered = Math.min(ruleset.gatherRates.deer, state.resourcePools.deer);
+        const gathered = Math.min(ruleset.gatherRates.deer * gatherMultiplier, state.resourcePools.deer);
         state.resources.food += gathered;
         state.resourcePools.deer = Math.max(0, state.resourcePools.deer - gathered);
         break;
       }
       case 'farms': {
-        const gathered = Math.min(ruleset.gatherRates.farms, villager.farmFoodRemaining);
+        const gathered = Math.min(ruleset.gatherRates.farms * gatherMultiplier, villager.farmFoodRemaining);
         state.resources.food += gathered;
         villager.farmFoodRemaining = Math.max(0, villager.farmFoodRemaining - gathered);
         state.resourcePools.farms = Math.max(0, state.resourcePools.farms - gathered);
         break;
       }
       case 'wood':
-        state.resources.wood += ruleset.gatherRates.wood;
+        state.resources.wood += ruleset.gatherRates.wood * gatherMultiplier;
         break;
       case 'gold':
-        state.resources.gold += ruleset.gatherRates.gold;
+        state.resources.gold += ruleset.gatherRates.gold * gatherMultiplier;
         break;
       case 'stone':
-        state.resources.stone += ruleset.gatherRates.stone;
+        state.resources.stone += ruleset.gatherRates.stone * gatherMultiplier;
         break;
       default:
         break;
@@ -1679,7 +1670,7 @@ export function runSimulation(
   const horizonSec = 28 * 60;
 
   for (let tick = 0; tick < horizonSec; tick += 1) {
-    processResourceGathering(state, ruleset);
+    processResourceGathering(state, ruleset, scenario.assumptions.workerEfficiency);
     state.timeSec += 1;
 
     const trainingDone = processFinishedTraining(state, ruleset);
