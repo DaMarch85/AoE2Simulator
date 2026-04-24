@@ -21,17 +21,21 @@ import {
 } from '@/lib/sim/schema';
 
 function storageKey(id: string) {
-  return `aoe2-build-lab:${id}`;
+  return `aoe2-build-lab:v3:${id}`;
 }
 
 function withBuildOrderFallback(draft: ScenarioDraft, ruleset: Ruleset) {
-  if (draft.buildOrder) {
+  const fallback = createDefaultBuildOrder(ruleset.startingVillagers);
+  if (draft.buildOrder && draft.buildOrder.queue.length > 0 && draft.buildOrder.buildingQueue.length > 0) {
     return draft;
   }
 
   return {
     ...draft,
-    buildOrder: createDefaultBuildOrder(ruleset.startingVillagers),
+    buildOrder: {
+      queue: draft.buildOrder?.queue?.length ? draft.buildOrder.queue : fallback.queue,
+      buildingQueue: draft.buildOrder?.buildingQueue?.length ? draft.buildOrder.buildingQueue : fallback.buildingQueue,
+    },
   };
 }
 
@@ -49,6 +53,7 @@ export function ScenarioWorkbench({
   const [cursorTime, setCursorTime] = useState<number>(0);
   const [isDirty, setIsDirty] = useState(false);
   const [hasRun, setHasRun] = useState(false);
+  const [isEditorCollapsed, setIsEditorCollapsed] = useState(false);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(storageKey(initialDraft.id));
@@ -98,6 +103,15 @@ export function ScenarioWorkbench({
             <span className={isDirty ? 'badge badge-warning' : 'badge badge-success'}>
               {isDirty ? 'Unsimulated changes' : hasRun ? 'Run up to date' : 'Not simulated yet'}
             </span>
+            {hasRun ? (
+              <button
+                type="button"
+                onClick={() => setIsEditorCollapsed((current) => !current)}
+                className="border border-slate-700/70 bg-slate-900/45 px-4 py-2 text-sm text-slate-200"
+              >
+                {isEditorCollapsed ? 'Expand editor' : 'Collapse editor'}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => {
@@ -108,6 +122,7 @@ export function ScenarioWorkbench({
                 setCursorTime(0);
                 setIsDirty(false);
                 setHasRun(false);
+                setIsEditorCollapsed(false);
                 window.localStorage.removeItem(storageKey(initialDraft.id));
               }}
               className="border border-slate-700/70 bg-slate-900/45 px-4 py-2 text-sm text-slate-200"
@@ -128,8 +143,14 @@ export function ScenarioWorkbench({
       <AssumptionBar draft={draft} resolved={resolved} />
       {hasRun && run ? <KpiBar run={run} /> : null}
 
-      <div className="grid-board">
-        <BuildOrderPanel draft={draft} ruleset={ruleset} onDraftChange={handleDraftChange} />
+      <div className={`grid-board${isEditorCollapsed ? ' grid-board-collapsed' : ''}`}>
+        <BuildOrderPanel
+          draft={draft}
+          ruleset={ruleset}
+          onDraftChange={handleDraftChange}
+          collapsed={isEditorCollapsed}
+          onToggleCollapse={() => setIsEditorCollapsed((current) => !current)}
+        />
 
         <div className="space-y-4">
           {hasRun && run ? (

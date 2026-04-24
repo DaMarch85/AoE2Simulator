@@ -1676,7 +1676,7 @@ export function runSimulation(
   markAffordableMilestones(milestones, state, ruleset);
   recordKeyframe(keyframes, state);
 
-  const horizonSec = 28 * 60;
+  const horizonSec = Math.max(60, Math.floor((scenario.assumptions.simulationDurationMin ?? 28) * 60));
 
   for (let tick = 0; tick < horizonSec; tick += 1) {
     processResourceGathering(state, ruleset, scenario.assumptions.workerEfficiency);
@@ -1701,9 +1701,6 @@ export function runSimulation(
     flushAllocationIfChanged();
     recordKeyframe(keyframes, state);
 
-    if (state.age === 'castle' && state.timeSec > (milestones.ageReachedAt.castle ?? 0) + 90) {
-      break;
-    }
 
     cleanupEventRefs(state);
   }

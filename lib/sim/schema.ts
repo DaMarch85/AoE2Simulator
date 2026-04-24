@@ -76,6 +76,7 @@ export const LoomTimingSchema = z.enum([
 ]);
 export type LoomTiming = z.infer<typeof LoomTimingSchema>;
 
+
 export const QueueCategorySchema = z.enum(['town_center', 'archery_range', 'stable', 'barracks', 'save']);
 export type QueueCategory = z.infer<typeof QueueCategorySchema>;
 
@@ -241,6 +242,7 @@ export const AssumptionsSchema = z.object({
   boarLure: z.enum(['clean', 'late', 'failed']).default('clean'),
   loomTiming: LoomTimingSchema.default('dark_end'),
   workerEfficiency: z.number().min(1).max(200).default(100),
+  simulationDurationMin: z.number().int().min(1).max(240).default(28),
   agePriorityGrid: AgePriorityGridSchema.default({
     dark: { town_center: 1, archery_range: 4, stable: 5, barracks: 5, save: 2 },
     feudal: { town_center: 1, archery_range: 2, stable: 4, barracks: 4, save: 3 },
@@ -466,6 +468,7 @@ export const QuestionSchema = z.discriminatedUnion('kind', [
   z.object({ id: z.string().min(1), kind: z.literal('bottleneck_summary') }),
 ]);
 export type Question = z.infer<typeof QuestionSchema>;
+
 
 export const BuildOrderQueueItemSchema = z.object({
   id: z.string().min(1),
@@ -752,6 +755,7 @@ export const DEFAULT_QUESTIONS: Question[] = [
   { id: 'q_bottleneck', kind: 'bottleneck_summary' },
 ];
 
+
 function planTask(task: BuildOrderTaskStep): BuildOrderPlanStep {
   return { kind: 'task', task, tiles: 0 };
 }
@@ -769,7 +773,7 @@ export function defaultVillagerPlanSteps(villagerNumber: number): BuildOrderPlan
     return BuildOrderPlanStepSchema.array().parse([walkingStep(14), planTask('wood')]);
   }
 
-  if (villagerNumber === 10) {
+  if (villagerNumber == 10) {
     return BuildOrderPlanStepSchema.array().parse([walkingStep(12), planTask('berries')]);
   }
 

@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo, useState } from 'react';
 import type {
   BuildOrder,
   BuildOrderPlanStep,
@@ -81,7 +82,16 @@ function rowId(prefix: string) {
 }
 
 function ensureBuildOrder(draft: ScenarioDraft, ruleset: Ruleset) {
-  return draft.buildOrder ?? createDefaultBuildOrder(ruleset.startingVillagers);
+  const fallback = createDefaultBuildOrder(ruleset.startingVillagers);
+  if (!draft.buildOrder) {
+    return fallback;
+  }
+
+  return {
+    queue: draft.buildOrder.queue.length > 0 ? draft.buildOrder.queue : fallback.queue,
+    buildingQueue:
+      draft.buildOrder.buildingQueue.length > 0 ? draft.buildOrder.buildingQueue : fallback.buildingQueue,
+  };
 }
 
 function sectionHeader(title: string, subtitle: string) {
@@ -276,20 +286,66 @@ function buildRowFromUiType(
   };
 }
 
+function selectedSpecificLabel(row: BuildOrderQueueItem, ruleset: Ruleset) {
+  if (row.category === 'villager') {
+    return 'Villager';
+  }
+  if (row.category === 'age_up') {
+    if (row.itemId === 'feudal_age') return 'Feudal Age';
+    if (row.itemId === 'castle_age') return 'Castle Age';
+    if (row.itemId === 'imperial_age') return 'Imperial Age';
+  }
+
+  return (
+    itemOptionsForCategory(row.category, ruleset).find((option) => option.value === row.itemId)?.label ?? row.itemId
+  );
+}
+
+function compactQueueLabel(row: BuildOrderQueueItem, rowIndex: number, queue: BuildOrder['queue'], ruleset: Ruleset) {
+  if (row.category === 'villager') {
+    return `Villager ${villagerNumberAtRow(queue, rowIndex)}`;
+  }
+  if (row.category === 'age_up') {
+    return selectedSpecificLabel(row, ruleset);
+  }
+  const base = queueTypeOptions.find((option) => option.value === uiTypeForRow(row))?.label ?? row.category;
+  return `${base}: ${selectedSpecificLabel(row, ruleset)}`;
+}
+
+function moveItem<T>(items: T[], fromIndex: number, direction: -1 | 1) {
+  const toIndex = fromIndex + direction;
+  if (toIndex < 0 || toIndex >= items.length) {
+    return items;
+  }
+  const next = [...items];
+  const [item] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, item);
+  return next;
+}
+
 export function BuildOrderPanel({
   draft,
   ruleset,
   onDraftChange,
+  collapsed = false,
+  onToggleCollapse,
 }: {
   draft: ScenarioDraft;
   ruleset: Ruleset;
   onDraftChange: (draft: ScenarioDraft) => void;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const buildOrder = ensureBuildOrder(draft, ruleset);
+  const [specificMenuRowId, setSpecificMenuRowId] = useState<string | null>(null);
 
-  const editableBuildings = Object.values(ruleset.buildings)
-    .filter((building) => building.id !== 'town_center')
-    .map((building) => ({ value: building.id, label: building.name }));
+  const editableBuildings = useMemo(
+    () =>
+      Object.values(ruleset.buildings)
+        .filter((building) => building.id !== 'town_center')
+        .map((building) => ({ value: building.id, label: building.name })),
+    [ruleset],
+  );
 
   const withBuildOrder = (nextBuildOrder: BuildOrder) => {
     onDraftChange({
@@ -307,21 +363,75 @@ export function BuildOrderPanel({
   const villagerSelectorMax = Math.max(40, countVillagerRows(buildOrder.queue) + 10);
   const visibleQueueRows = Math.max(30, buildOrder.queue.length);
 
+  if (collapsed) {
+    return (
+      <section className="panel p-3">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Build order editor</p>
+            <h2 className="mt-1 text-lg font-semibold text-slate-50">Collapsed queue view</h2>
+          </div>
+          {onToggleCollapse ? (
+            <button
+              type="button"
+              onClick={onToggleCollapse}
+              className="border border-slate-700/70 bg-slate-900/60 px-3 py-2 text-sm text-slate-100"
+            >
+              Expand
+            </button>
+          ) : null}
+        </div>
+
+        <div>
+          <table className="w-full border-collapse text-sm table-fixed">
+            <thead>
+              <tr className="text-slate-400">
+                <th className="w-12 border border-slate-800/70 px-2 py-2 text-left font-medium">#</th>
+                <th className="border border-slate-800/70 px-2 py-2 text-left font-medium">Type</th>
+              </tr>
+            </thead>
+            <tbody>
+              {buildOrder.queue.map((row, rowIndex) => (
+                <tr key={row.id}>
+                  <td className="border border-slate-800/70 px-2 py-2 font-medium text-slate-200">{rowIndex + 1}</td>
+                  <td className="border border-slate-800/70 px-2 py-2 text-slate-200 truncate">
+                    {compactQueueLabel(row, rowIndex, buildOrder.queue, ruleset)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="panel p-4">
-      <div className="mb-4">
-        <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Build order editor</p>
-        <h2 className="mt-2 text-xl font-semibold text-slate-50">Single click-order queue</h2>
-        <p className="mt-2 text-sm text-slate-300">
-          Set the order you would click villagers, military, techs, and age-ups in a real game. Buildings stay in their own table because they also need builders and trigger rules.
-        </p>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Build order editor</p>
+          <h2 className="mt-2 text-xl font-semibold text-slate-50">Single click-order queue</h2>
+          <p className="mt-2 text-sm text-slate-300">
+            Set the order you would click villagers, military, techs, and age-ups in a real game. Buildings stay in their own table because they also need builders and trigger rules.
+          </p>
+        </div>
+        {onToggleCollapse ? (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            className="border border-slate-700/70 bg-slate-900/60 px-3 py-2 text-sm text-slate-100"
+          >
+            Collapse
+          </button>
+        ) : null}
       </div>
 
       <div className="space-y-5">
         <section className="border border-slate-700/70 bg-slate-950/45 p-3">
-          {sectionHeader('Scenario + assumptions', 'Keep this simple: name, civilization, and worker efficiency.')}
-          <div className="grid gap-3 md:grid-cols-3">
-            <label className="block md:col-span-1">
+          {sectionHeader('Scenario + assumptions', 'Just the essentials for now.')}
+          <div className="grid gap-3 md:grid-cols-4">
+            <label className="block md:col-span-2">
               <span className="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-400">Scenario name</span>
               <input
                 className="w-full border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-sm text-slate-100"
@@ -365,26 +475,47 @@ export function BuildOrderPanel({
                 }
               />
             </label>
+
+            <label className="block md:col-span-1">
+              <span className="mb-1 block text-xs uppercase tracking-[0.2em] text-slate-400">Simulation length (min)</span>
+              <input
+                type="number"
+                min={1}
+                max={240}
+                className="w-full border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-sm"
+                value={draft.assumptions.simulationDurationMin}
+                onChange={(event) =>
+                  onDraftChange({
+                    ...draft,
+                    buildOrder,
+                    assumptions: {
+                      ...draft.assumptions,
+                      simulationDurationMin: Math.min(240, Math.max(1, Number(event.target.value) || 28)),
+                    },
+                  })
+                }
+              />
+            </label>
           </div>
         </section>
 
         <section className="border border-slate-700/70 bg-slate-950/45 p-3">
           {sectionHeader(
             'Main queue',
-            'One ordered list for villagers, military, techs, and age-ups. Each row can fire once the prior row has been clicked.',
+            'Each row becomes available once the prior queue row has been clicked. Empty rows let you extend the build quickly.',
           )}
           <div>
             <table className="w-full border-collapse text-sm table-fixed">
               <thead>
                 <tr className="text-slate-400">
-                  <th className="w-12 border border-slate-800/70 px-2 py-2 text-left font-medium">#</th>
-                  <th className="w-56 border border-slate-800/70 px-2 py-2 text-left font-medium">Type</th>
+                  <th className="w-10 border border-slate-800/70 px-2 py-2 text-left font-medium">#</th>
+                  <th className="w-40 border border-slate-800/70 px-2 py-2 text-left font-medium">Type</th>
                   {(['First', 'Then', 'Then', 'Then', 'Then'] as const).map((label, index) => (
-                    <th key={`${label}-${index}`} className="w-24 border border-slate-800/70 px-2 py-2 text-left font-medium">
+                    <th key={`${label}-${index}`} className="w-16 border border-slate-800/70 px-1 py-2 text-left font-medium">
                       {label}
                     </th>
                   ))}
-                  <th className="w-28 border border-slate-800/70 px-2 py-2 text-left font-medium">Actions</th>
+                  <th className="w-20 border border-slate-800/70 px-2 py-2 text-left font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -393,65 +524,92 @@ export function BuildOrderPanel({
                   const isEmpty = !row;
                   const villagerNumber = villagerNumberAtRow(buildOrder.queue, rowIndex);
                   const uiType = row ? uiTypeForRow(row) : '';
+                  const needsSpecific = !!row && row.category !== 'villager' && row.category !== 'age_up';
                   const specificOptions = row ? itemOptionsForCategory(row.category, ruleset) : [];
 
                   return (
                     <tr key={row?.id ?? `empty-row-${rowIndex}`}>
-                      <td className="border border-slate-800/70 px-2 py-2 font-medium text-slate-200">{rowIndex + 1}</td>
+                      <td className="border border-slate-800/70 px-2 py-1 text-slate-200">{rowIndex + 1}</td>
                       <td className="border border-slate-800/70 p-1 align-top">
-                        <div className="space-y-1">
-                          <select
-                            className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                            value={uiType}
-                            onChange={(event) => {
-                              const nextUiType = event.target.value as QueueUiType;
-                              if (!nextUiType) return;
-                              const nextRow = buildRowFromUiType(
-                                nextUiType,
-                                ruleset,
-                                countVillagerRows(buildOrder.queue.slice(0, rowIndex + 1)) + (row?.category === 'villager' ? 0 : 1),
-                                row,
-                              );
-
-                              if (isEmpty) {
-                                insertQueueRowAt(rowIndex, nextRow);
-                                return;
-                              }
-
-                              withBuildOrder(withQueueRowUpdated(buildOrder, rowIndex, nextRow));
-                            }}
-                          >
-                            <option value="">—</option>
-                            {queueTypeOptions.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-
-                          {row && row.category !== 'villager' && row.category !== 'age_up' ? (
+                        <div
+                          className="relative"
+                          onMouseEnter={() => {
+                            if (needsSpecific && row) {
+                              setSpecificMenuRowId(row.id);
+                            }
+                          }}
+                          onMouseLeave={() => {
+                            if (row && specificMenuRowId === row.id) {
+                              setSpecificMenuRowId(null);
+                            }
+                          }}
+                        >
+                          <div className="flex items-center gap-1">
                             <select
-                              className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
-                              value={row.itemId}
-                              onChange={(event) =>
-                                withBuildOrder(
-                                  withQueueRowUpdated(buildOrder, rowIndex, {
-                                    ...row,
-                                    itemId: event.target.value,
-                                  }),
-                                )
-                              }
+                              className="min-w-0 flex-1 border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-xs"
+                              value={uiType}
+                              onChange={(event) => {
+                                const nextUiType = event.target.value as QueueUiType;
+                                if (!nextUiType) return;
+                                const nextVillagerNumber =
+                                  countVillagerRows(buildOrder.queue.slice(0, rowIndex + 1)) +
+                                  (row?.category === 'villager' ? 0 : 1);
+                                const nextRow = buildRowFromUiType(nextUiType, ruleset, nextVillagerNumber, row);
+
+                                if (isEmpty) {
+                                  insertQueueRowAt(rowIndex, nextRow);
+                                  return;
+                                }
+
+                                withBuildOrder(withQueueRowUpdated(buildOrder, rowIndex, nextRow));
+                              }}
                             >
-                              {specificOptions.map((option) => (
+                              <option value="">—</option>
+                              {queueTypeOptions.map((option) => (
                                 <option key={option.value} value={option.value}>
                                   {option.label}
                                 </option>
                               ))}
                             </select>
-                          ) : null}
 
-                          {row?.category === 'villager' ? (
-                            <div className="text-xs text-slate-500">Villager {villagerNumber}</div>
+                            {row?.category === 'villager' ? (
+                              <span className="shrink-0 text-[10px] text-slate-500">V{villagerNumber}</span>
+                            ) : null}
+
+                            {needsSpecific && row ? (
+                              <button
+                                type="button"
+                                className="w-20 shrink-0 truncate border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-200"
+                                onClick={() => setSpecificMenuRowId((current) => (current === row.id ? null : row.id))}
+                              >
+                                {selectedSpecificLabel(row, ruleset)}
+                              </button>
+                            ) : null}
+                          </div>
+
+                          {needsSpecific && row && specificMenuRowId === row.id ? (
+                            <div className="absolute left-full top-0 z-30 ml-1 w-40 border border-slate-700/80 bg-slate-950/95 shadow-2xl">
+                              {specificOptions.map((option) => (
+                                <button
+                                  key={option.value}
+                                  type="button"
+                                  className={`block w-full border-b border-slate-800/80 px-2 py-1 text-left text-xs ${
+                                    row.itemId === option.value ? 'bg-violet-500/20 text-violet-100' : 'text-slate-200 hover:bg-slate-800/70'
+                                  }`}
+                                  onClick={() => {
+                                    withBuildOrder(
+                                      withQueueRowUpdated(buildOrder, rowIndex, {
+                                        ...row,
+                                        itemId: option.value,
+                                      }),
+                                    );
+                                    setSpecificMenuRowId(null);
+                                  }}
+                                >
+                                  {option.label}
+                                </button>
+                              ))}
+                            </div>
                           ) : null}
                         </div>
                       </td>
@@ -460,7 +618,7 @@ export function BuildOrderPanel({
                           {row?.category === 'villager' ? (
                             <div className="space-y-1">
                               <select
-                                className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                                className="w-full border border-slate-700/70 bg-slate-900/60 px-1 py-1 text-xs"
                                 value={planStepValue(stepAt(row.orderSteps, slot as StepSlot))}
                                 onChange={(event) =>
                                   withBuildOrder(
@@ -482,7 +640,7 @@ export function BuildOrderPanel({
                                 <input
                                   type="number"
                                   min={0}
-                                  className="w-full border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
+                                  className="w-full border border-slate-700/70 bg-slate-900/60 px-1 py-1 text-xs"
                                   value={stepAt(row.orderSteps, slot as StepSlot)?.tiles ?? 0}
                                   onChange={(event) =>
                                     withBuildOrder(
@@ -498,20 +656,20 @@ export function BuildOrderPanel({
                                   }
                                 />
                               ) : (
-                                <div className="h-7" />
+                                <div className="h-6" />
                               )}
                             </div>
                           ) : (
-                            <div className="h-[4.2rem] bg-slate-950/10" />
+                            <div className="h-12 bg-slate-950/10" />
                           )}
                         </td>
                       ))}
                       <td className="border border-slate-800/70 p-1 align-top">
                         {row ? (
-                          <div className="flex flex-col gap-2">
+                          <div className="flex flex-col gap-1">
                             <button
                               type="button"
-                              className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                              className="border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-200"
                               onClick={() =>
                                 withBuildOrder({
                                   ...buildOrder,
@@ -523,7 +681,7 @@ export function BuildOrderPanel({
                             </button>
                             <button
                               type="button"
-                              className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                              className="border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-200"
                               onClick={() =>
                                 withBuildOrder({
                                   ...buildOrder,
@@ -542,27 +700,12 @@ export function BuildOrderPanel({
               </tbody>
             </table>
           </div>
-
-          <div className="mt-3 flex justify-end">
-            <button
-              type="button"
-              className="border border-slate-700/70 bg-slate-900/60 px-3 py-2 text-sm text-slate-100"
-              onClick={() =>
-                withBuildOrder({
-                  ...buildOrder,
-                  queue: [...buildOrder.queue, createDefaultQueueVillagerRow(countVillagerRows(buildOrder.queue) + 1)],
-                })
-              }
-            >
-              Add queue order
-            </button>
-          </div>
         </section>
 
         <section className="border border-slate-700/70 bg-slate-950/45 p-3">
           {sectionHeader(
             'Buildings',
-            'Separate building triggers, one or two builders, and explicit walking tiles to and from the build.',
+            'Separate building triggers, one or two builders, explicit walking tiles, and manual ordering.',
           )}
           <div>
             <table className="w-full border-collapse text-sm">
@@ -582,7 +725,7 @@ export function BuildOrderPanel({
                   <tr key={row.id}>
                     <td className="border border-slate-800/70 p-1">
                       <select
-                        className="w-full min-w-32 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        className="w-full min-w-28 border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
                         value={row.buildingId}
                         onChange={(event) =>
                           withBuildOrder({
@@ -602,7 +745,7 @@ export function BuildOrderPanel({
                     </td>
                     <td className="border border-slate-800/70 p-1">
                       <select
-                        className="w-full min-w-44 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        className="w-full min-w-40 border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
                         value={row.trigger}
                         onChange={(event) =>
                           withBuildOrder({
@@ -625,7 +768,7 @@ export function BuildOrderPanel({
                         type="number"
                         min={1}
                         max={villagerSelectorMax}
-                        className="w-24 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
                         value={row.builderVillagerId ?? ''}
                         onChange={(event) =>
                           withBuildOrder({
@@ -647,7 +790,7 @@ export function BuildOrderPanel({
                         type="number"
                         min={1}
                         max={villagerSelectorMax}
-                        className="w-24 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
                         value={row.secondaryBuilderVillagerId ?? ''}
                         onChange={(event) =>
                           withBuildOrder({
@@ -668,7 +811,7 @@ export function BuildOrderPanel({
                       <input
                         type="number"
                         min={0}
-                        className="w-24 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
                         value={row.walkToStartTiles}
                         onChange={(event) =>
                           withBuildOrder({
@@ -689,7 +832,7 @@ export function BuildOrderPanel({
                       <input
                         type="number"
                         min={0}
-                        className="w-24 border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-sm"
+                        className="w-20 border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-sm"
                         value={row.walkAfterCompleteTiles}
                         onChange={(event) =>
                           withBuildOrder({
@@ -707,10 +850,34 @@ export function BuildOrderPanel({
                       />
                     </td>
                     <td className="border border-slate-800/70 p-1">
-                      <div className="flex gap-2">
+                      <div className="grid grid-cols-2 gap-1">
                         <button
                           type="button"
-                          className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                          className="border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-200"
+                          onClick={() =>
+                            withBuildOrder({
+                              ...buildOrder,
+                              buildingQueue: moveItem(buildOrder.buildingQueue, rowIndex, -1),
+                            })
+                          }
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-200"
+                          onClick={() =>
+                            withBuildOrder({
+                              ...buildOrder,
+                              buildingQueue: moveItem(buildOrder.buildingQueue, rowIndex, 1),
+                            })
+                          }
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          className="border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-200"
                           onClick={() =>
                             withBuildOrder({
                               ...buildOrder,
@@ -728,7 +895,7 @@ export function BuildOrderPanel({
                         </button>
                         <button
                           type="button"
-                          className="border border-slate-700/70 bg-slate-900/60 px-2 py-2 text-xs text-slate-200"
+                          className="border border-slate-700/70 bg-slate-900/60 px-2 py-1 text-[11px] text-slate-200"
                           onClick={() =>
                             withBuildOrder({
                               ...buildOrder,

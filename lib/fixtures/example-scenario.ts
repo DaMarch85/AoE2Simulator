@@ -9,7 +9,7 @@ export const exampleScenarioDraft: ScenarioDraft = ScenarioDraftSchema.parse(
     civId: 'generic',
     rulesetVersion: 'current',
     baseOpeningId: undefined,
-    buildOrder: createDefaultBuildOrder(3),
+    buildOrder: createDefaultBuildOrder(),
     userEvents: [],
     policies: [],
   }),

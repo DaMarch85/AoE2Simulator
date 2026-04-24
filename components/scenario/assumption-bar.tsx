@@ -14,6 +14,7 @@ export function AssumptionBar({
     <section className="panel-subtle flex flex-wrap gap-2 px-4 py-3">
       <span className="badge">Civ: {draft.civId}</span>
       <span className="badge">Worker efficiency: {draft.assumptions.workerEfficiency}%</span>
+      <span className="badge">Sim: {draft.assumptions.simulationDurationMin} min</span>
       <span className="badge">Queue: {summary.queueItems}</span>
       <span className="badge">Villagers: {summary.villagerItems}</span>
       <span className="badge">Military: {summary.militaryItems}</span>
