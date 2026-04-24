@@ -1200,6 +1200,8 @@ function buildHousePolicyAction(scenario: ResolvedScenario, state: EngineState, 
     buildingId: 'house',
     builders: policy.builders,
     priority: policy.priority,
+    walkToStartTiles: 0,
+    walkAfterCompleteTiles: 0,
   };
 }
 
@@ -1281,22 +1283,29 @@ function buildKeepQueueActions(scenario: ResolvedScenario, state: EngineState) {
       continue;
     }
 
-    if (!['town_center', 'archery_range', 'stable', 'barracks'].includes(policy.producerType)) {
+    const producerType = policy.producerType;
+    if (
+      producerType !== 'town_center' &&
+      producerType !== 'archery_range' &&
+      producerType !== 'stable' &&
+      producerType !== 'barracks'
+    ) {
       continue;
     }
 
-    const producerCount = producerByBuilding(state, policy.producerType).length;
-    if (policy.producerType !== 'town_center' && producerCount === 0) {
+    const producerCount = producerByBuilding(state, producerType).length;
+    if (producerType !== 'town_center' && producerCount === 0) {
       continue;
     }
 
     actions.push({
-      rank: rankForProducer(policy.producerType),
+      rank: rankForProducer(producerType),
       action: {
         type: 'train_once',
         unitId: policy.productId,
-        atBuildingId: policy.producerType,
+        atBuildingId: producerType,
         priority: policy.priority,
+        walkTilesBeforeTasks: [],
       },
     });
   }
